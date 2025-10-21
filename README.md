@@ -12,8 +12,7 @@ Optiq Retail Analytics is a desktop application that detects shoppers in live or
    ```bash
    pip install -r requirements.txt
    ```
-3. Place the supplied `age-gender_detector.pt` checkpoint beside `main.py` (or update the path in code before launching the app).
-4. Download a generic people detector checkpoint (for example Ultralytics `yolov8n.pt`), rename it to `person_detector.pt`, and place it next to `main.py`. The app will refuse to start if the file is missing.
+3. Download weights `person_dector.pt` and `age-gender_detector.pt` and place them beside `main.py`. Weights are hosted in Releases (tag weights-v1).
 
 > **Note:** PyTorch automatically uses the GPU if one is available; otherwise it falls back to CPU execution.
 
@@ -23,7 +22,7 @@ Optiq Retail Analytics is a desktop application that detects shoppers in live or
 python main.py
 ```
 
-The UI defaults to dark mode. Use the control panel on the left to choose a video source and click **Start Analysis**.
+Use the control panel on the left to choose a video source and click **Start Analysis**.
 
 ## Troubleshooting
 
