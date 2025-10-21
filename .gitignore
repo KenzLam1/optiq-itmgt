@@ -1,0 +1,6 @@
+# yolo models
+*.pt
+
+# Env
+.venv/
+
