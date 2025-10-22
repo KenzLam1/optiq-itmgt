@@ -1,11 +1,13 @@
 import tempfile
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
 
+from data_store import append_detection_logs
 from pipeline import VisionPipeline
 
 
@@ -53,6 +55,7 @@ def run_analysis(
     frame_placeholder,
     status_placeholder,
     stop_requested_fn: Callable[[], bool],
+    run_id: str,
 ) -> Tuple[List[Dict[str, Union[str, float, int]]], Optional[np.ndarray], int, float, float]:
     cap = cv2.VideoCapture(source)
     if not cap.isOpened():
@@ -63,6 +66,8 @@ def run_analysis(
 
     detection_rows: List[Dict[str, Union[str, float, int]]] = []
     preview_image: Optional[np.ndarray] = None
+    log_entries: List[Dict[str, Any]] = []
+    recent_tracks: List[Dict[str, Any]] = []
 
     start_time = time.time()
     processed_frames = 0
@@ -79,6 +84,7 @@ def run_analysis(
             if not ok:
                 break
 
+            frame_height, frame_width = frame.shape[:2]
             annotated, detections = pipeline.process(frame, frame_idx)
             frame_idx += 1
 
@@ -86,6 +92,16 @@ def run_analysis(
                 continue
 
             processed_frames += 1
+            frame_timestamp = datetime.utcnow()
+            track_cutoff = frame_timestamp
+
+            # Remove stale tracks
+            track_ttl_seconds = 6.0
+            recent_tracks = [
+                track
+                for track in recent_tracks
+                if (track_cutoff - track["logged_at"]).total_seconds() <= track_ttl_seconds
+            ]
 
             if detections or preview_image is None:
                 preview_image = annotated.copy()
@@ -103,6 +119,7 @@ def run_analysis(
                 label_text = det.gender_label or det.class_label or "Person"
                 if isinstance(label_text, str):
                     label_text = label_text.title()
+
                 detection_rows.append(
                     {
                         "frame": frame_idx,
@@ -115,6 +132,59 @@ def run_analysis(
                         "bbox_y": det.bbox[1],
                         "bbox_w": det.bbox[2],
                         "bbox_h": det.bbox[3],
+                    }
+                )
+
+                bbox_x, bbox_y, bbox_w, bbox_h = det.bbox
+                center_x = (bbox_x + bbox_w / 2.0) / max(1, frame_width)
+                center_y = (bbox_y + bbox_h / 2.0) / max(1, frame_height)
+                normalized_center = (float(np.clip(center_x, 0.0, 1.0)), float(np.clip(center_y, 0.0, 1.0)))
+
+                matched_track: Optional[Dict[str, Any]] = None
+                duplicate_distance = 0.06
+                for track in recent_tracks:
+                    dx = normalized_center[0] - track["center_x"]
+                    dy = normalized_center[1] - track["center_y"]
+                    dist = np.hypot(dx, dy)
+                    time_diff = (frame_timestamp - track["logged_at"]).total_seconds()
+                    if dist <= duplicate_distance and time_diff <= track_ttl_seconds:
+                        matched_track = track
+                        break
+
+                if matched_track:
+                    matched_track["logged_at"] = frame_timestamp
+                    matched_track["center_x"] = normalized_center[0]
+                    matched_track["center_y"] = normalized_center[1]
+                    continue
+
+                recent_tracks.append(
+                    {
+                        "center_x": normalized_center[0],
+                        "center_y": normalized_center[1],
+                        "logged_at": frame_timestamp,
+                    }
+                )
+
+                log_entries.append(
+                    {
+                        "run_id": run_id,
+                        "logged_at": frame_timestamp,
+                        "frame_idx": frame_idx,
+                        "processed_frame": processed_frames,
+                        "source": "Age/Gender" if det.source == "age_gender" else "Person",
+                        "label": label_text,
+                        "gender": det.gender_label.capitalize() if det.gender_label else "Unknown",
+                        "age_range": det.age_range or "",
+                        "age_estimate": det.age_estimate if det.age_estimate is not None else np.nan,
+                        "confidence": float(det.confidence),
+                        "bbox_x": bbox_x,
+                        "bbox_y": bbox_y,
+                        "bbox_w": bbox_w,
+                        "bbox_h": bbox_h,
+                        "center_x": normalized_center[0],
+                        "center_y": normalized_center[1],
+                        "frame_width": frame_width,
+                        "frame_height": frame_height,
                     }
                 )
 
@@ -145,4 +215,6 @@ def run_analysis(
     else:
         progress_bar.progress(100, text="Analysis complete")
         status_placeholder.success(f"Completed in {elapsed:.1f}s ({fps:.2f} FPS)")
+
+    append_detection_logs(log_entries)
     return detection_rows, preview_image, processed_frames, fps, elapsed
