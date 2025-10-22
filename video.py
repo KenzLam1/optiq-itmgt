@@ -1,0 +1,148 @@
+import tempfile
+import time
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
+import cv2
+import numpy as np
+
+from pipeline import VisionPipeline
+
+
+def _write_upload_to_temp(uploaded_file: Any) -> Path:
+    suffix = Path(uploaded_file.name).suffix or ".mp4"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp.write(uploaded_file.read())
+    tmp.flush()
+    tmp.close()
+    return Path(tmp.name)
+
+
+def prepare_video_source(
+    source_type: str,
+    camera_index: int,
+    file_path: str,
+    stream_url: str,
+    uploaded_file: Optional[Any],
+) -> Tuple[Union[int, str], Optional[Path]]:
+    if source_type == "Webcam":
+        return camera_index, None
+
+    if source_type == "Video file (path)":
+        path = Path(file_path).expanduser()
+        if not path.exists():
+            raise RuntimeError(f"Video file not found: {path}")
+        return str(path), None
+
+    if source_type == "RTSP / CCTV":
+        if not stream_url:
+            raise RuntimeError("A valid RTSP / CCTV URL is required.")
+        return stream_url, None
+
+    if uploaded_file is None:
+        raise RuntimeError("Upload a video file before running analysis.")
+    temp_path = _write_upload_to_temp(uploaded_file)
+    return str(temp_path), temp_path
+
+
+def run_analysis(
+    pipeline: VisionPipeline,
+    source: Union[int, str],
+    preview_stride: int,
+    progress_bar,
+    frame_placeholder,
+    status_placeholder,
+    stop_requested_fn: Callable[[], bool],
+) -> Tuple[List[Dict[str, Union[str, float, int]]], Optional[np.ndarray], int, float, float]:
+    cap = cv2.VideoCapture(source)
+    if not cap.isOpened():
+        raise RuntimeError("Unable to open the selected video source.")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    total_frames = total_frames if total_frames > 0 else None
+
+    detection_rows: List[Dict[str, Union[str, float, int]]] = []
+    preview_image: Optional[np.ndarray] = None
+
+    start_time = time.time()
+    processed_frames = 0
+    frame_idx = 0
+    stopped_by_user = False
+
+    try:
+        while True:
+            if stop_requested_fn():
+                stopped_by_user = True
+                break
+
+            ok, frame = cap.read()
+            if not ok:
+                break
+
+            annotated, detections = pipeline.process(frame, frame_idx)
+            frame_idx += 1
+
+            if frame_idx % pipeline.frame_interval != 0:
+                continue
+
+            processed_frames += 1
+
+            if detections or preview_image is None:
+                preview_image = annotated.copy()
+
+            if processed_frames % max(1, preview_stride) == 0 or detections:
+                rgb_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                frame_placeholder.image(
+                    rgb_frame,
+                    caption=f"Frame {frame_idx}",
+                    use_container_width=True,
+                    channels="RGB",
+                )
+
+            for det in detections:
+                label_text = det.gender_label or det.class_label or "Person"
+                if isinstance(label_text, str):
+                    label_text = label_text.title()
+                detection_rows.append(
+                    {
+                        "frame": frame_idx,
+                        "source": "Age/Gender" if det.source == "age_gender" else "Person",
+                        "label": label_text,
+                        "age_range": det.age_range or "",
+                        "age_estimate": det.age_estimate if det.age_estimate is not None else np.nan,
+                        "confidence": det.confidence,
+                        "bbox_x": det.bbox[0],
+                        "bbox_y": det.bbox[1],
+                        "bbox_w": det.bbox[2],
+                        "bbox_h": det.bbox[3],
+                    }
+                )
+
+            if total_frames:
+                progress_ratio = min(1.0, frame_idx / total_frames)
+                progress_value = int(progress_ratio * 100)
+                progress_bar.progress(progress_value, text=f"Processed {processed_frames} frame(s)")
+            else:
+                progress_bar.progress(0, text=f"Processed {processed_frames} frame(s)")
+
+            if processed_frames % max(1, preview_stride) == 0:
+                status_placeholder.info(f"Frames processed: {processed_frames}")
+    finally:
+        cap.release()
+
+    elapsed = time.time() - start_time
+    if processed_frames == 0:
+        if stopped_by_user:
+            progress_bar.progress(0, text="Analysis stopped")
+            status_placeholder.info("Analysis stopped before any frames were processed.")
+            return detection_rows, preview_image, processed_frames, 0.0, elapsed
+        raise RuntimeError("No frames were processed from the selected source.")
+
+    fps = processed_frames / elapsed if elapsed > 0 else 0.0
+    if stopped_by_user:
+        progress_bar.progress(0, text="Analysis stopped")
+        status_placeholder.warning(f"Analysis stopped by user after {processed_frames} frame(s).")
+    else:
+        progress_bar.progress(100, text="Analysis complete")
+        status_placeholder.success(f"Completed in {elapsed:.1f}s ({fps:.2f} FPS)")
+    return detection_rows, preview_image, processed_frames, fps, elapsed
