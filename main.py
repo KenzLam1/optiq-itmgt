@@ -2,7 +2,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
@@ -448,11 +448,11 @@ def prepare_video_source(
 def run_analysis(
     pipeline: VisionPipeline,
     source: Union[int, str],
-    max_frames: int,
     preview_stride: int,
     progress_bar,
     frame_placeholder,
     status_placeholder,
+    stop_requested_fn: Callable[[], bool],
 ) -> Tuple[List[Dict[str, Union[str, float, int]]], Optional[np.ndarray], int, float, float]:
     cap = cv2.VideoCapture(source)
     if not cap.isOpened():
@@ -467,9 +467,14 @@ def run_analysis(
     start_time = time.time()
     processed_frames = 0
     frame_idx = 0
+    stopped_by_user = False
 
     try:
-        while processed_frames < max_frames:
+        while True:
+            if stop_requested_fn():
+                stopped_by_user = True
+                break
+
             ok, frame = cap.read()
             if not ok:
                 break
@@ -514,13 +519,11 @@ def run_analysis(
                 )
 
             if total_frames:
-                denominator = min(total_frames, max_frames)
-                progress_ratio = processed_frames / max(1, denominator)
+                progress_ratio = min(1.0, frame_idx / total_frames)
+                progress_value = int(progress_ratio * 100)
+                progress_bar.progress(progress_value, text=f"Processed {processed_frames} frame(s)")
             else:
-                progress_ratio = processed_frames / max_frames
-
-            progress_value = int(min(100, progress_ratio * 100))
-            progress_bar.progress(progress_value, text=f"Processed {processed_frames} frame(s)")
+                progress_bar.progress(0, text=f"Processed {processed_frames} frame(s)")
 
             if processed_frames % max(1, preview_stride) == 0:
                 status_placeholder.info(f"Frames processed: {processed_frames}")
@@ -529,11 +532,19 @@ def run_analysis(
 
     elapsed = time.time() - start_time
     if processed_frames == 0:
+        if stopped_by_user:
+            progress_bar.progress(0, text="Analysis stopped")
+            status_placeholder.info("Analysis stopped before any frames were processed.")
+            return detection_rows, preview_image, processed_frames, 0.0, elapsed
         raise RuntimeError("No frames were processed from the selected source.")
 
     fps = processed_frames / elapsed if elapsed > 0 else 0.0
-    progress_bar.progress(100, text="Analysis complete")
-    status_placeholder.success(f"Completed in {elapsed:.1f}s ({fps:.2f} FPS)")
+    if stopped_by_user:
+        progress_bar.progress(0, text="Analysis stopped")
+        status_placeholder.warning(f"Analysis stopped by user after {processed_frames} frame(s).")
+    else:
+        progress_bar.progress(100, text="Analysis complete")
+        status_placeholder.success(f"Completed in {elapsed:.1f}s ({fps:.2f} FPS)")
     return detection_rows, preview_image, processed_frames, fps, elapsed
 
 
@@ -594,10 +605,14 @@ def main() -> None:
     st.title("Optiq Retail Analytics")
     st.caption("Streamlit dashboard for age and gender analytics powered by YOLO.")
 
+    if "stop_requested" not in st.session_state:
+        st.session_state.stop_requested = False
+
     with st.sidebar:
         st.header("Models")
-        age_model_path = st.text_input("Age & gender weights", AGE_GENDER_MODEL_PATH)
-        person_model_path = st.text_input("Person detector weights", PERSON_DETECTOR_MODEL_PATH)
+        age_model_path = AGE_GENDER_MODEL_PATH
+        person_model_path = PERSON_DETECTOR_MODEL_PATH
+        st.caption("Using default model weight files bundled with the app.")
         device_choice = st.selectbox("Device", options=["auto", "cpu", "cuda"], index=0)
         age_conf = st.slider("Age/Gender confidence", 0.05, 0.95, 0.40, 0.05)
         person_conf = st.slider("Person confidence", 0.05, 0.95, 0.35, 0.05)
@@ -625,9 +640,13 @@ def main() -> None:
 
         st.header("Processing")
         frame_skip = st.slider("Frame skip", 1, 10, 1)
-        max_frames = st.slider("Max frames to analyse", 10, 500, 150, 10)
         preview_stride = st.slider("Preview interval", 1, 30, 5)
         run_clicked = st.button("Run analysis", type="primary")
+        stop_clicked = st.button("Stop analysis", type="secondary")
+        if stop_clicked:
+            st.session_state.stop_requested = True
+        if run_clicked:
+            st.session_state.stop_requested = False
 
     st.markdown(
         """
@@ -638,7 +657,10 @@ def main() -> None:
     )
 
     if not run_clicked:
-        st.info("Adjust the settings in the sidebar and click **Run analysis** to begin.")
+        st.info(
+            "Adjust the settings in the sidebar and click **Run analysis** to begin. "
+            "Use **Stop analysis** to halt processing at any time."
+        )
         return
 
     temp_file: Optional[Path] = None
@@ -670,11 +692,11 @@ def main() -> None:
         results = run_analysis(
             pipeline=pipeline,
             source=source,
-            max_frames=max_frames,
             preview_stride=preview_stride,
             progress_bar=progress_bar,
             frame_placeholder=frame_placeholder,
             status_placeholder=status_placeholder,
+            stop_requested_fn=lambda: st.session_state.get("stop_requested", False),
         )
         detection_rows, preview_image, processed_frames, fps, elapsed = results
 
@@ -693,6 +715,7 @@ def main() -> None:
     finally:
         if temp_file and temp_file.exists():
             temp_file.unlink(missing_ok=True)
+        st.session_state.stop_requested = False
 
 
 if __name__ == "__main__":
