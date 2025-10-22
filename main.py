@@ -1,13 +1,14 @@
-import sys
+import tempfile
 import time
-from pathlib import Path
 from dataclasses import dataclass
-from typing import List, Optional, Tuple, Union
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
+import pandas as pd
+import streamlit as st
 import torch
-from PyQt5 import QtCore, QtGui, QtWidgets
 
 
 AGE_GENDER_MODEL_PATH = "age-gender_detector.pt"
@@ -53,7 +54,6 @@ class YOLOAgeGenderDetector:
         self.device = device or ("cuda:0" if torch.cuda.is_available() else "cpu")
         self.model = YOLO(model_path)
 
-        # Move the underlying torch.nn.Module to the target device.
         try:
             self.model.to(self.device)
         except AttributeError:
@@ -173,7 +173,7 @@ class YOLOPersonDetector:
         if not Path(model_path).exists():
             raise RuntimeError(
                 f"Person detector weights not found at '{model_path}'. "
-                "Download a YOLO model (e.g. yolov8n.pt) and provide its path."
+                "Download a YOLO model (for example yolov8n.pt) and provide its path."
             )
 
         self.device = device or ("cuda:0" if torch.cuda.is_available() else "cpu")
@@ -262,17 +262,30 @@ class YOLOPersonDetector:
 
 
 class VisionPipeline:
-    """Runs YOLO age/gender detection on incoming frames."""
+    """Runs YOLO detections on incoming frames."""
 
     def __init__(
         self,
         model_path: str,
+        person_model_path: str,
         device: Optional[str] = None,
-        person_model_path: str = PERSON_DETECTOR_MODEL_PATH,
+        age_conf_threshold: float = 0.4,
+        person_conf_threshold: float = 0.35,
+        imgsz: int = 640,
     ):
-        self.age_detector = YOLOAgeGenderDetector(model_path, device=device)
-        self.person_detector = YOLOPersonDetector(person_model_path, device=device)
-        self.frame_interval = 1  # process every frame by default
+        self.age_detector = YOLOAgeGenderDetector(
+            model_path,
+            device=device,
+            conf_threshold=age_conf_threshold,
+            imgsz=imgsz,
+        )
+        self.person_detector = YOLOPersonDetector(
+            person_model_path,
+            device=device,
+            conf_threshold=person_conf_threshold,
+            imgsz=imgsz,
+        )
+        self.frame_interval = 1
 
     def set_frame_interval(self, interval: int) -> None:
         self.frame_interval = max(1, interval)
@@ -367,317 +380,319 @@ class VisionPipeline:
             cv2.putText(image, line, (x + margin, baseline), font, font_scale, (255, 255, 255), font_thickness, cv2.LINE_AA)
 
 
-class VideoWorker(QtCore.QThread):
-    frame_ready = QtCore.pyqtSignal(QtGui.QImage, list)
-    status = QtCore.pyqtSignal(str)
+def _resolve_device(choice: str) -> Optional[str]:
+    choice = choice.lower()
+    if choice == "auto":
+        return None
+    if choice == "cuda":
+        return "cuda:0"
+    return choice
 
-    def __init__(self, pipeline: VisionPipeline, parent: Optional[QtCore.QObject] = None):
-        super().__init__(parent)
-        self.pipeline = pipeline
-        self.source: Union[int, str] = 0
-        self._running = False
-        self._frame_index = 0
 
-    def set_source(self, source: Union[int, str]) -> None:
-        self.source = source
+@st.cache_resource(show_spinner=False)
+def load_pipeline(
+    age_model_path: str,
+    person_model_path: str,
+    device_choice: str,
+    age_conf: float,
+    person_conf: float,
+    imgsz: int,
+) -> VisionPipeline:
+    device = _resolve_device(device_choice)
+    return VisionPipeline(
+        model_path=age_model_path,
+        person_model_path=person_model_path,
+        device=device,
+        age_conf_threshold=age_conf,
+        person_conf_threshold=person_conf,
+        imgsz=imgsz,
+    )
 
-    def stop(self) -> None:
-        self._running = False
-        self.wait(1_000)
 
-    def run(self) -> None:
-        cap = cv2.VideoCapture(self.source)
-        if not cap.isOpened():
-            self.status.emit("Unable to open video source.")
-            return
+def _write_upload_to_temp(uploaded_file) -> Path:
+    suffix = Path(uploaded_file.name).suffix or ".mp4"
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    tmp.write(uploaded_file.read())
+    tmp.flush()
+    tmp.close()
+    return Path(tmp.name)
 
-        self._running = True
-        self._frame_index = 0
-        self.status.emit("Streaming...")
-        last_emit_time = 0.0
 
-        while self._running:
+def prepare_video_source(
+    source_type: str,
+    camera_index: int,
+    file_path: str,
+    stream_url: str,
+    uploaded_file,
+) -> Tuple[Union[int, str], Optional[Path]]:
+    if source_type == "Webcam":
+        return camera_index, None
+
+    if source_type == "Video file (path)":
+        path = Path(file_path).expanduser()
+        if not path.exists():
+            raise RuntimeError(f"Video file not found: {path}")
+        return str(path), None
+
+    if source_type == "RTSP / CCTV":
+        if not stream_url:
+            raise RuntimeError("A valid RTSP / CCTV URL is required.")
+        return stream_url, None
+
+    if uploaded_file is None:
+        raise RuntimeError("Upload a video file before running analysis.")
+    temp_path = _write_upload_to_temp(uploaded_file)
+    return str(temp_path), temp_path
+
+
+def run_analysis(
+    pipeline: VisionPipeline,
+    source: Union[int, str],
+    max_frames: int,
+    preview_stride: int,
+    progress_bar,
+    frame_placeholder,
+    status_placeholder,
+) -> Tuple[List[Dict[str, Union[str, float, int]]], Optional[np.ndarray], int, float, float]:
+    cap = cv2.VideoCapture(source)
+    if not cap.isOpened():
+        raise RuntimeError("Unable to open the selected video source.")
+
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    total_frames = total_frames if total_frames > 0 else None
+
+    detection_rows: List[Dict[str, Union[str, float, int]]] = []
+    preview_image: Optional[np.ndarray] = None
+
+    start_time = time.time()
+    processed_frames = 0
+    frame_idx = 0
+
+    try:
+        while processed_frames < max_frames:
             ok, frame = cap.read()
             if not ok:
-                self.status.emit("Stream ended or lost connection.")
                 break
 
-            annotated, detections = self.pipeline.process(frame, self._frame_index)
-            self._frame_index += 1
+            annotated, detections = pipeline.process(frame, frame_idx)
+            frame_idx += 1
 
-            rgb = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-            h, w, ch = rgb.shape
-            bytes_per_line = ch * w
-            qt_image = QtGui.QImage(rgb.data, w, h, bytes_per_line, QtGui.QImage.Format.Format_RGB888).copy()
+            if frame_idx % pipeline.frame_interval != 0:
+                continue
 
-            now = time.time()
-            if detections and (now - last_emit_time) > 0.75:
-                self.status.emit(f"Detected {len(detections)} person(s).")
-                last_emit_time = now
+            processed_frames += 1
 
-            self.frame_ready.emit(qt_image, detections)
+            if detections or preview_image is None:
+                preview_image = annotated.copy()
 
-        cap.release()
-        self.status.emit("Idle.")
+            if processed_frames % max(1, preview_stride) == 0 or detections:
+                rgb_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+                frame_placeholder.image(
+                    rgb_frame,
+                    caption=f"Frame {frame_idx}",
+                    use_container_width=True,
+                    channels="RGB",
+                )
 
+            for det in detections:
+                label_text = det.gender_label or det.class_label or "Person"
+                if isinstance(label_text, str):
+                    label_text = label_text.title()
+                detection_rows.append(
+                    {
+                        "frame": frame_idx,
+                        "source": "Age/Gender" if det.source == "age_gender" else "Person",
+                        "label": label_text,
+                        "age_range": det.age_range or "",
+                        "age_estimate": det.age_estimate if det.age_estimate is not None else np.nan,
+                        "confidence": det.confidence,
+                        "bbox_x": det.bbox[0],
+                        "bbox_y": det.bbox[1],
+                        "bbox_w": det.bbox[2],
+                        "bbox_h": det.bbox[3],
+                    }
+                )
 
-class OptiqWindow(QtWidgets.QMainWindow):
-    def __init__(
-        self,
-        model_path: str,
-        person_model_path: str,
-        parent: Optional[QtWidgets.QWidget] = None,
-    ):
-        super().__init__(parent)
-        self.setWindowTitle("Optiq Retail Analytics")
-        self.resize(1280, 720)
-
-        self.pipeline = VisionPipeline(model_path=model_path, person_model_path=person_model_path)
-        self.worker = VideoWorker(self.pipeline)
-        self.worker.frame_ready.connect(self.update_frame)
-        self.worker.status.connect(self.update_status)
-
-        self._build_ui()
-        self._apply_dark_theme()
-
-        self.statusBar().showMessage("Idle.")
-
-    def _build_ui(self) -> None:
-        central = QtWidgets.QWidget()
-        layout = QtWidgets.QHBoxLayout(central)
-        layout.setContentsMargins(0, 0, 0, 0)
-
-        self.video_label = QtWidgets.QLabel("Video stream will appear here.")
-        self.video_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.video_label.setMinimumSize(640, 480)
-        self.video_label.setStyleSheet("color: #8f9ba8;")
-
-        layout.addWidget(self._build_side_panel(), 0)
-        layout.addWidget(self.video_label, 1)
-        layout.addWidget(self._build_detection_panel(), 0)
-
-        self.setCentralWidget(central)
-
-    def _build_side_panel(self) -> QtWidgets.QWidget:
-        panel = QtWidgets.QFrame()
-        panel.setFixedWidth(320)
-        panel.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-
-        layout = QtWidgets.QVBoxLayout(panel)
-        layout.setContentsMargins(24, 24, 24, 24)
-        layout.setSpacing(18)
-
-        title = QtWidgets.QLabel("Optiq Retail Analytics")
-        title.setStyleSheet("font-size: 18px; font-weight: 600; color: #e2e8f0;")
-        layout.addWidget(title)
-
-        layout.addWidget(self._build_source_group())
-        layout.addWidget(self._build_settings_group())
-
-        layout.addStretch(1)
-
-        self.start_button = QtWidgets.QPushButton("Start Analysis")
-        self.start_button.clicked.connect(self.start_stream)
-        self.stop_button = QtWidgets.QPushButton("Stop")
-        self.stop_button.clicked.connect(self.stop_stream)
-        self.stop_button.setEnabled(False)
-
-        layout.addWidget(self.start_button)
-        layout.addWidget(self.stop_button)
-
-        return panel
-
-    def _build_source_group(self) -> QtWidgets.QGroupBox:
-        group = QtWidgets.QGroupBox("Capture Source")
-        group_layout = QtWidgets.QVBoxLayout(group)
-
-        self.source_selector = QtWidgets.QComboBox()
-        self.source_selector.addItems(["Webcam", "Video File", "RTSP / CCTV"])
-        self.source_selector.currentIndexChanged.connect(self._on_source_changed)
-
-        self.webcam_index = QtWidgets.QSpinBox()
-        self.webcam_index.setRange(0, 10)
-        self.webcam_index.setValue(0)
-        self.webcam_index.setPrefix("Camera #")
-
-        self.file_controls = QtWidgets.QWidget()
-        file_layout = QtWidgets.QHBoxLayout(self.file_controls)
-        file_layout.setContentsMargins(0, 0, 0, 0)
-        file_layout.setSpacing(8)
-
-        self.file_path_edit = QtWidgets.QLineEdit()
-        self.file_path_edit.setPlaceholderText("Select a video file...")
-        self.browse_button = QtWidgets.QPushButton("Browse")
-        self.browse_button.clicked.connect(self._browse_file)
-        file_layout.addWidget(self.file_path_edit)
-        file_layout.addWidget(self.browse_button)
-
-        self.rtsp_edit = QtWidgets.QLineEdit()
-        self.rtsp_edit.setPlaceholderText("rtsp://user:pass@host:554/stream")
-
-        group_layout.addWidget(self.source_selector)
-        group_layout.addWidget(self.webcam_index)
-        group_layout.addWidget(self.file_controls)
-        group_layout.addWidget(self.rtsp_edit)
-
-        self._on_source_changed(0)
-        return group
-
-    def _build_settings_group(self) -> QtWidgets.QGroupBox:
-        group = QtWidgets.QGroupBox("Processing Settings")
-        layout = QtWidgets.QFormLayout(group)
-
-        self.frame_skip_spin = QtWidgets.QSpinBox()
-        self.frame_skip_spin.setRange(1, 10)
-        self.frame_skip_spin.setValue(1)
-        self.frame_skip_spin.valueChanged.connect(self._on_frame_skip_changed)
-
-        layout.addRow("Frame skip", self.frame_skip_spin)
-        return group
-
-    def _build_detection_panel(self) -> QtWidgets.QWidget:
-        panel = QtWidgets.QFrame()
-        panel.setFixedWidth(260)
-        panel.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-
-        layout = QtWidgets.QVBoxLayout(panel)
-        layout.setContentsMargins(16, 24, 16, 24)
-        layout.setSpacing(12)
-
-        header = QtWidgets.QLabel("Detections")
-        header.setStyleSheet("font-size: 16px; font-weight: 600; color: #e2e8f0;")
-        layout.addWidget(header)
-
-        self.detections_list = QtWidgets.QListWidget()
-        self.detections_list.setStyleSheet("background-color: #1b2533; border: 1px solid #2b3645; color: #f1f5f9;")
-        layout.addWidget(self.detections_list, 1)
-
-        return panel
-
-    def _apply_dark_theme(self) -> None:
-        palette = QtGui.QPalette()
-        palette.setColor(QtGui.QPalette.ColorRole.Window, QtGui.QColor("#101820"))
-        palette.setColor(QtGui.QPalette.ColorRole.WindowText, QtGui.QColor("#e2e8f0"))
-        palette.setColor(QtGui.QPalette.ColorRole.Base, QtGui.QColor("#17212b"))
-        palette.setColor(QtGui.QPalette.ColorRole.AlternateBase, QtGui.QColor("#1b2533"))
-        palette.setColor(QtGui.QPalette.ColorRole.ToolTipBase, QtGui.QColor("#1f2933"))
-        palette.setColor(QtGui.QPalette.ColorRole.ToolTipText, QtGui.QColor("#f1f5f9"))
-        palette.setColor(QtGui.QPalette.ColorRole.Text, QtGui.QColor("#e2e8f0"))
-        palette.setColor(QtGui.QPalette.ColorRole.Button, QtGui.QColor("#1b2533"))
-        palette.setColor(QtGui.QPalette.ColorRole.ButtonText, QtGui.QColor("#e2e8f0"))
-        palette.setColor(QtGui.QPalette.ColorRole.Highlight, QtGui.QColor("#2563eb"))
-        palette.setColor(QtGui.QPalette.ColorRole.HighlightedText, QtGui.QColor("#f8fafc"))
-        self.setPalette(palette)
-
-        self.setStyleSheet(
-            """
-            QWidget { background-color: #101820; color: #e2e8f0; }
-            QGroupBox { border: 1px solid #27313f; border-radius: 6px; margin-top: 12px; padding: 12px; }
-            QGroupBox:title { subcontrol-origin: margin; left: 12px; padding: 0 4px; color: #93c5fd; }
-            QPushButton { background-color: #2563eb; color: #f8fafc; padding: 8px 14px; border: none; border-radius: 6px; }
-            QPushButton:disabled { background-color: #1f2937; color: #64748b; }
-            QPushButton:hover { background-color: #1d4ed8; }
-            QComboBox, QSpinBox, QLineEdit { background-color: #17212b; border: 1px solid #27313f; border-radius: 4px; padding: 6px; }
-            QLabel { color: #e2e8f0; }
-            QStatusBar { background-color: #0f172a; color: #cbd5f5; }
-            """
-        )
-
-    def _on_source_changed(self, index: int) -> None:
-        self.webcam_index.setVisible(index == 0)
-        self.file_controls.setVisible(index == 1)
-        self.rtsp_edit.setVisible(index == 2)
-
-    def _on_frame_skip_changed(self, value: int) -> None:
-        self.pipeline.set_frame_interval(value)
-
-    def _browse_file(self) -> None:
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self,
-            "Select video file",
-            "",
-            "Video Files (*.mp4 *.mov *.avi *.mkv);;All Files (*.*)",
-        )
-        if path:
-            self.file_path_edit.setText(path)
-
-    def start_stream(self) -> None:
-        source_mode = self.source_selector.currentIndex()
-        source: Union[int, str]
-
-        if source_mode == 0:
-            source = int(self.webcam_index.value())
-        elif source_mode == 1:
-            path = self.file_path_edit.text().strip()
-            if not path:
-                QtWidgets.QMessageBox.warning(self, "Video file required", "Please select a video file to analyse.")
-                return
-            source = path
-        else:
-            url = self.rtsp_edit.text().strip()
-            if not url:
-                QtWidgets.QMessageBox.warning(self, "Stream URL required", "Please enter an RTSP / CCTV URL.")
-                return
-            source = url
-
-        self.worker.set_source(source)
-        self.worker.start()
-        self.start_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
-
-    def stop_stream(self) -> None:
-        if self.worker.isRunning():
-            self.worker.stop()
-        self.start_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
-
-    def update_frame(self, image: QtGui.QImage, detections: List[DetectionResult]) -> None:
-        pixmap = QtGui.QPixmap.fromImage(image)
-        self.video_label.setPixmap(pixmap.scaled(self.video_label.size(), QtCore.Qt.AspectRatioMode.KeepAspectRatio))
-        self._refresh_detection_list(detections)
-
-    def update_status(self, message: str) -> None:
-        self.statusBar().showMessage(message, 2000)
-
-    def _refresh_detection_list(self, detections: List[DetectionResult]) -> None:
-        self.detections_list.clear()
-        for det in detections:
-            source_text = "Age/Gender" if det.source == "age_gender" else "Person"
-            label_text = det.gender_label or det.class_label or "Person"
-            if isinstance(label_text, str) and label_text.islower():
-                label_text = label_text.capitalize()
-
-            if det.source == "age_gender":
-                age_text = det.age_range or "-"
-                approx = f" (~{det.age_estimate:0.1f})" if det.age_estimate is not None else ""
+            if total_frames:
+                denominator = min(total_frames, max_frames)
+                progress_ratio = processed_frames / max(1, denominator)
             else:
-                age_text = "-"
-                approx = ""
+                progress_ratio = processed_frames / max_frames
 
-            conf_text = f"{det.confidence * 100:0.0f}%"
-            bbox_text = f"[x:{det.bbox[0]} y:{det.bbox[1]} w:{det.bbox[2]} h:{det.bbox[3]}]"
-            item_text = f"{source_text}: {label_text} | Age {age_text}{approx} | Conf {conf_text} | {bbox_text}"
-            self.detections_list.addItem(item_text)
+            progress_value = int(min(100, progress_ratio * 100))
+            progress_bar.progress(progress_value, text=f"Processed {processed_frames} frame(s)")
 
-    def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # noqa: N802
-        self.stop_stream()
-        event.accept()
+            if processed_frames % max(1, preview_stride) == 0:
+                status_placeholder.info(f"Frames processed: {processed_frames}")
+    finally:
+        cap.release()
+
+    elapsed = time.time() - start_time
+    if processed_frames == 0:
+        raise RuntimeError("No frames were processed from the selected source.")
+
+    fps = processed_frames / elapsed if elapsed > 0 else 0.0
+    progress_bar.progress(100, text="Analysis complete")
+    status_placeholder.success(f"Completed in {elapsed:.1f}s ({fps:.2f} FPS)")
+    return detection_rows, preview_image, processed_frames, fps, elapsed
+
+
+def summarize_detections(rows: List[Dict[str, Union[str, float, int]]]) -> Dict[str, int]:
+    age_gender = sum(1 for row in rows if row["source"] == "Age/Gender")
+    generic = sum(1 for row in rows if row["source"] == "Person")
+    return {"age_gender": age_gender, "person": generic, "total": len(rows)}
+
+
+def render_results(
+    detection_rows: List[Dict[str, Union[str, float, int]]],
+    preview_image: Optional[np.ndarray],
+    processed_frames: int,
+    fps: float,
+    elapsed: float,
+) -> None:
+    if preview_image is not None:
+        st.subheader("Preview")
+        st.image(
+            cv2.cvtColor(preview_image, cv2.COLOR_BGR2RGB),
+            caption="Most recent annotated frame",
+            use_container_width=True,
+        )
+
+    summary = summarize_detections(detection_rows)
+    st.subheader("Session summary")
+    metric_cols = st.columns(4)
+    metric_cols[0].metric("Frames analysed", processed_frames)
+    metric_cols[1].metric("Detections", summary["total"])
+    metric_cols[2].metric("Age/Gender", summary["age_gender"])
+    metric_cols[3].metric("Processing FPS", f"{fps:.2f}")
+    st.caption(f"Elapsed time: {elapsed:.1f}s")
+
+    st.subheader("Detections")
+    if detection_rows:
+        df = pd.DataFrame(detection_rows)
+        styled = df.style.format(
+            {
+                "confidence": "{:.1%}",
+                "age_estimate": "{:.1f}",
+            },
+            na_rep="–",
+        )
+        st.dataframe(styled, use_container_width=True, hide_index=True)
+        csv = df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "Download detections (CSV)",
+            data=csv,
+            file_name="optiq_detections.csv",
+            mime="text/csv",
+        )
+    else:
+        st.info("No detections were produced with the current configuration.")
 
 
 def main() -> None:
-    app = QtWidgets.QApplication(sys.argv)
+    st.set_page_config(page_title="Optiq Retail Analytics", layout="wide")
+    st.title("Optiq Retail Analytics")
+    st.caption("Streamlit dashboard for age and gender analytics powered by YOLO.")
 
-    model_path = AGE_GENDER_MODEL_PATH
-    person_model_path = PERSON_DETECTOR_MODEL_PATH
+    with st.sidebar:
+        st.header("Models")
+        age_model_path = st.text_input("Age & gender weights", AGE_GENDER_MODEL_PATH)
+        person_model_path = st.text_input("Person detector weights", PERSON_DETECTOR_MODEL_PATH)
+        device_choice = st.selectbox("Device", options=["auto", "cpu", "cuda"], index=0)
+        age_conf = st.slider("Age/Gender confidence", 0.05, 0.95, 0.40, 0.05)
+        person_conf = st.slider("Person confidence", 0.05, 0.95, 0.35, 0.05)
+        imgsz = st.slider("Image size", 320, 960, 640, 32)
+
+        st.header("Capture source")
+        source_type = st.selectbox(
+            "Source type",
+            options=["Upload video", "Webcam", "Video file (path)", "RTSP / CCTV"],
+            index=0,
+        )
+        uploaded_file = None
+        file_path = ""
+        stream_url = ""
+        camera_index = 0
+
+        if source_type == "Upload video":
+            uploaded_file = st.file_uploader("Select a video file", type=["mp4", "mov", "mkv", "avi"])
+        elif source_type == "Webcam":
+            camera_index = st.number_input("Camera index", min_value=0, max_value=10, value=0, step=1)
+        elif source_type == "Video file (path)":
+            file_path = st.text_input("Absolute or relative file path")
+        else:
+            stream_url = st.text_input("RTSP / CCTV URL", value="rtsp://user:pass@host:554/stream")
+
+        st.header("Processing")
+        frame_skip = st.slider("Frame skip", 1, 10, 1)
+        max_frames = st.slider("Max frames to analyse", 10, 500, 150, 10)
+        preview_stride = st.slider("Preview interval", 1, 30, 5)
+        run_clicked = st.button("Run analysis", type="primary")
+
+    st.markdown(
+        """
+        Configure the capture source and press **Run analysis** to process a batch of frames.
+        The dashboard reuses the original YOLO pipeline and displays aggregated detections,
+        annotated previews, and downloadable results.
+        """
+    )
+
+    if not run_clicked:
+        st.info("Adjust the settings in the sidebar and click **Run analysis** to begin.")
+        return
+
+    temp_file: Optional[Path] = None
     try:
-        window = OptiqWindow(model_path=model_path, person_model_path=person_model_path)
+        with st.spinner("Loading detection models..."):
+            pipeline = load_pipeline(
+                age_model_path=age_model_path,
+                person_model_path=person_model_path,
+                device_choice=device_choice,
+                age_conf=age_conf,
+                person_conf=person_conf,
+                imgsz=imgsz,
+            )
+
+        pipeline.set_frame_interval(frame_skip)
+
+        source, temp_file = prepare_video_source(
+            source_type=source_type,
+            camera_index=int(camera_index),
+            file_path=file_path,
+            stream_url=stream_url,
+            uploaded_file=uploaded_file,
+        )
+
+        progress_bar = st.progress(0, text="Initialising stream...")
+        frame_placeholder = st.empty()
+        status_placeholder = st.empty()
+
+        results = run_analysis(
+            pipeline=pipeline,
+            source=source,
+            max_frames=max_frames,
+            preview_stride=preview_stride,
+            progress_bar=progress_bar,
+            frame_placeholder=frame_placeholder,
+            status_placeholder=status_placeholder,
+        )
+        detection_rows, preview_image, processed_frames, fps, elapsed = results
+
+        progress_bar.empty()
+        status_placeholder.empty()
+
+        render_results(
+            detection_rows=detection_rows,
+            preview_image=preview_image,
+            processed_frames=processed_frames,
+            fps=fps,
+            elapsed=elapsed,
+        )
     except RuntimeError as exc:
-        QtWidgets.QMessageBox.critical(None, "Optiq Retail Analytics", str(exc))
-        sys.exit(1)
-
-    window.show()
-
-    sys.exit(app.exec_())
+        st.error(str(exc))
+    finally:
+        if temp_file and temp_file.exists():
+            temp_file.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":
