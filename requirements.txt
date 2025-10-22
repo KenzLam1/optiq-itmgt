@@ -1,7 +1,8 @@
 torch>=1.13
 torchvision>=0.14
 opencv-python>=4.8
-PyQt5>=5.15
 numpy>=1.24
 Pillow>=10.0
 ultralytics>=8.0
+pandas>=1.5
+streamlit>=1.28

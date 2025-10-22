@@ -1,9 +1,6 @@
 # Optiq Retail Analytics
 
-Optiq Retail Analytics is a desktop application that detects shoppers in live or recorded video feeds and estimates their age and gender. The app offers three capture modes:
-- **Webcam** - use the default camera connected to your machine.
-- **Video file** - analyse any pre-recorded MP4/AVI/MKV file.
-- **CCTV / RTSP stream** - connect to an IP camera or NVR stream (for example `rtsp://user:pass@host:554/stream`).
+Optiq Retail Analytics now ships as a Streamlit dashboard that detects shoppers in live or recorded video feeds and estimates age and gender. The web UI reuses the YOLO-based pipelines from the desktop build and adds rich summaries, annotated previews, and CSV exports.
 
 ## Prerequisites
 
@@ -12,24 +9,44 @@ Optiq Retail Analytics is a desktop application that detects shoppers in live or
    ```bash
    pip install -r requirements.txt
    ```
-3. Download weights `person_dector.pt` and `age-gender_detector.pt` and place them beside `main.py`. Weights are hosted in Releases (tag weights-v1).
+3. Place the model weights (`age-gender_detector.pt` and `person_detector.pt`) alongside `main.py`.
 
-> **Note:** PyTorch automatically uses the GPU if one is available; otherwise it falls back to CPU execution.
+> PyTorch will automatically use CUDA when available; otherwise, it falls back to CPU execution.
 
-## Running the application
+## Running the dashboard
+
+Start Streamlit in the project directory:
 
 ```bash
-python main.py
+streamlit run main.py
 ```
 
-Use the control panel on the left to choose a video source and click **Start Analysis**.
+Your browser will open to `http://localhost:8501`. Use the sidebar to select the capture source and model settings, then click **Run analysis**.
+
+### Capture modes
+
+- **Upload video** – upload an MP4/MOV/AVI/MKV clip directly from the browser.
+- **Webcam** – process frames from a locally connected camera (indexed via OpenCV).
+- **Video file (path)** – provide a path on disk that the server process can read.
+- **RTSP / CCTV** – analyse frames from a network camera or NVR stream.
+
+The `Max frames to analyse` control limits how many frames are processed per run, which keeps long-running streams manageable.
+
+### Output
+
+After each run the dashboard surfaces:
+
+- The latest annotated frame with bounding boxes and age/gender overlays.
+- Frame, detection count, and throughput metrics.
+- A sortable detections table with confidence, age estimates, and bounding boxes.
+- A CSV export button for downstream analysis.
 
 ## Troubleshooting
 
-- If the age & gender overlays never appear, double-check that `age-gender_detector.pt` matches the expected model format.
-- If the app fails to launch complaining about `person_detector.pt`, download a YOLO COCO model (for example `yolov8n.pt`) and rename it as instructed above.
-- For RTSP streams, ensure the URL is reachable from your machine and that firewalls allow the traffic.
-- On lower powered machines, increase the *Frame Skip* value in the settings drawer to reduce CPU load.
+- If the page reports missing weights, verify both `.pt` files exist next to `main.py` or provide absolute paths in the sidebar.
+- For RTSP/Webcam sources, ensure the Streamlit process has permission to access the device or network.
+- When processing large files, increase `Frame skip` to reduce load.
+- Uploaded videos are written to a temporary file during the session and deleted once processing completes.
 
 ## License
 
