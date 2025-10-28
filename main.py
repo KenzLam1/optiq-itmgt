@@ -33,11 +33,11 @@ def main() -> None:
     last_run_id = (last_summary or {}).get("run_id")
     last_preview_image = st.session_state.get("last_preview_image")
 
-    last_summary = st.session_state.get("last_run_summary")
-    last_run_id = (last_summary or {}).get("run_id")
-    last_preview_image = st.session_state.get("last_preview_image")
-
     if not sidebar.run_clicked:
+        last_summary = st.session_state.get("last_run_summary")
+        last_run_id = (last_summary or {}).get("run_id")
+        last_preview_image = st.session_state.get("last_preview_image")
+
         detections_tab, analytics_tab = st.tabs(["Detections", "Analytics"])
         with detections_tab:
             render_detection_log_preview(
@@ -52,7 +52,8 @@ def main() -> None:
         return
 
     temp_file: Optional[Path] = None
-    should_rerun = False
+    latest_summary = None
+    latest_preview = None
     try:
         with st.spinner("Loading detection models..."):
             pipeline = load_pipeline(
@@ -105,7 +106,8 @@ def main() -> None:
         }
         st.session_state.last_preview_image = preview_image
         st.session_state.current_run_id = None
-        should_rerun = True
+        latest_summary = st.session_state.last_run_summary
+        latest_preview = preview_image
     except RuntimeError as exc:
         st.error(str(exc))
     finally:
@@ -115,20 +117,19 @@ def main() -> None:
         if st.session_state.get("current_run_id"):
             st.session_state.current_run_id = None
 
-    if should_rerun:
-        st.experimental_rerun()
-    else:
-        detections_tab, analytics_tab = st.tabs(["Detections", "Analytics"])
-        with detections_tab:
-            render_detection_log_preview(
-                run_id=last_run_id,
-                preview_image=last_preview_image,
-                processed_frames=(last_summary or {}).get("processed_frames"),
-                fps=(last_summary or {}).get("fps"),
-                elapsed=(last_summary or {}).get("elapsed"),
-            )
-        with analytics_tab:
-            render_analytics_dashboard()
+    summary_for_display = latest_summary or st.session_state.get("last_run_summary")
+    preview_for_display = latest_preview or st.session_state.get("last_preview_image")
+    detections_tab, analytics_tab = st.tabs(["Detections", "Analytics"])
+    with detections_tab:
+        render_detection_log_preview(
+            run_id=(summary_for_display or {}).get("run_id"),
+            preview_image=preview_for_display,
+            processed_frames=(summary_for_display or {}).get("processed_frames"),
+            fps=(summary_for_display or {}).get("fps"),
+            elapsed=(summary_for_display or {}).get("elapsed"),
+        )
+    with analytics_tab:
+        render_analytics_dashboard()
 
 
 if __name__ == "__main__":
