@@ -1,6 +1,10 @@
 import tempfile
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:  # Python <3.9 fallback using backports.zoneinfo
+    ZoneInfo = None  # type: ignore[assignment]
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
@@ -93,7 +97,12 @@ def run_analysis(
                 continue
 
             processed_frames += 1
-            frame_timestamp = datetime.utcnow()
+            frame_timestamp = datetime.now(timezone.utc)
+            if ZoneInfo is not None:
+                manila_ts = frame_timestamp.astimezone(ZoneInfo("Asia/Manila"))
+            else:
+                phil_tz = timezone(timedelta(hours=8))
+                manila_ts = frame_timestamp.astimezone(phil_tz)
             track_cutoff = frame_timestamp
 
             # Remove stale tracks
@@ -120,21 +129,6 @@ def run_analysis(
                 label_text = det.gender_label or det.class_label or "Person"
                 if isinstance(label_text, str):
                     label_text = label_text.title()
-
-                detection_rows.append(
-                    {
-                        "frame": frame_idx,
-                        "source": "Age/Gender" if det.source == "age_gender" else "Person",
-                        "label": label_text,
-                        "age_range": det.age_range or "",
-                        "age_estimate": det.age_estimate if det.age_estimate is not None else np.nan,
-                        "confidence": det.confidence,
-                        "bbox_x": det.bbox[0],
-                        "bbox_y": det.bbox[1],
-                        "bbox_w": det.bbox[2],
-                        "bbox_h": det.bbox[3],
-                    }
-                )
 
                 bbox_x, bbox_y, bbox_w, bbox_h = det.bbox
                 center_x = (bbox_x + bbox_w / 2.0) / max(1, frame_width)
@@ -166,10 +160,25 @@ def run_analysis(
                     }
                 )
 
+                detection_rows.append(
+                    {
+                        "frame": frame_idx,
+                        "source": "Age/Gender" if det.source == "age_gender" else "Person",
+                        "label": label_text,
+                        "age_range": det.age_range or "",
+                        "age_estimate": det.age_estimate if det.age_estimate is not None else np.nan,
+                        "confidence": det.confidence,
+                        "bbox_x": bbox_x,
+                        "bbox_y": bbox_y,
+                        "bbox_w": bbox_w,
+                        "bbox_h": bbox_h,
+                    }
+                )
+
                 log_entries.append(
                     {
                         "run_id": run_id,
-                        "logged_at": frame_timestamp,
+                        "logged_at": manila_ts,
                         "frame_idx": frame_idx,
                         "processed_frame": processed_frames,
                         "source": "Age/Gender" if det.source == "age_gender" else "Person",

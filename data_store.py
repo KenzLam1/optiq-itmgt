@@ -112,6 +112,15 @@ def append_detection_logs(entries: Iterable[Dict[str, Any]]) -> None:
         conn.commit()
 
 
+def clear_detection_logs() -> None:
+    if not DB_PATH.exists():
+        return
+    with _connect() as conn:
+        _ensure_schema(conn)
+        conn.execute(f"DELETE FROM {TABLE_NAME};")
+        conn.commit()
+
+
 def load_detection_logs() -> pd.DataFrame:
     _bootstrap_from_legacy_csv_if_needed()
     if not DB_PATH.exists():
@@ -120,7 +129,14 @@ def load_detection_logs() -> pd.DataFrame:
     with _connect() as conn:
         _ensure_schema(conn)
         query = f"SELECT * FROM {TABLE_NAME} ORDER BY logged_at;"
-        df = pd.read_sql_query(query, conn, parse_dates=["logged_at"])
+        df = pd.read_sql_query(query, conn)
+    if df.empty:
+        return df
+    df["logged_at"] = pd.to_datetime(df["logged_at"], errors="coerce", utc=True)
+    df = df.dropna(subset=["logged_at"])
+    if df.empty:
+        return df
+    df["logged_at"] = df["logged_at"].dt.tz_convert("Asia/Manila")
     return df
 
 
@@ -141,9 +157,9 @@ def _bootstrap_from_legacy_csv_if_needed() -> None:
             return
 
         if "logged_at" in legacy_df.columns:
-            legacy_df["logged_at"] = pd.to_datetime(legacy_df["logged_at"], errors="coerce")
+            legacy_df["logged_at"] = pd.to_datetime(legacy_df["logged_at"], errors="coerce", utc=True)
             legacy_df = legacy_df.dropna(subset=["logged_at"])
-            legacy_df["logged_at"] = legacy_df["logged_at"].dt.tz_localize(None)
+            legacy_df["logged_at"] = legacy_df["logged_at"].dt.tz_convert("Asia/Manila")
 
         missing_cols = [col for col in TABLE_COLUMNS if col not in legacy_df.columns]
         for col in missing_cols:

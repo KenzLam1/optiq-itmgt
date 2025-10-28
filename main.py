@@ -1,9 +1,10 @@
+import uuid
 from pathlib import Path
 from typing import Optional
-import uuid
 
 import streamlit as st
 
+from data_store import clear_detection_logs, load_detection_logs
 from pipeline import load_pipeline
 from ui import (
     ensure_session_state,
@@ -21,22 +22,33 @@ def main() -> None:
 
     ensure_session_state()
     render_intro()
+    current_logs = load_detection_logs()
+    st.session_state.latest_detection_logs = current_logs
     sidebar = render_sidebar()
     model_paths = get_model_paths()
+
+    just_cleared = False
+    if st.session_state.get("clear_confirmed"):
+        clear_detection_logs()
+        st.session_state.clear_confirmed = False
+        st.session_state.last_run_summary = None
+        st.session_state.last_preview_image = None
+        current_logs = load_detection_logs()
+        st.session_state.latest_detection_logs = current_logs
+        just_cleared = True
+        sidebar.run_clicked = False
+        st.success("Detection logs have been cleared.")
 
     if sidebar.stop_clicked:
         st.session_state.stop_requested = True
     if sidebar.run_clicked:
         st.session_state.stop_requested = False
 
-    last_summary = st.session_state.get("last_run_summary")
-    last_run_id = (last_summary or {}).get("run_id")
-    last_preview_image = st.session_state.get("last_preview_image")
-
-    if not sidebar.run_clicked:
+    if just_cleared or not sidebar.run_clicked:
         last_summary = st.session_state.get("last_run_summary")
         last_run_id = (last_summary or {}).get("run_id")
         last_preview_image = st.session_state.get("last_preview_image")
+        current_logs = st.session_state.get("latest_detection_logs", current_logs)
 
         detections_tab, analytics_tab = st.tabs(["Detections", "Analytics"])
         with detections_tab:
@@ -46,9 +58,10 @@ def main() -> None:
                 processed_frames=(last_summary or {}).get("processed_frames"),
                 fps=(last_summary or {}).get("fps"),
                 elapsed=(last_summary or {}).get("elapsed"),
+                logs_df=current_logs,
             )
         with analytics_tab:
-            render_analytics_dashboard()
+            render_analytics_dashboard(current_logs)
         return
 
     temp_file: Optional[Path] = None
@@ -108,6 +121,12 @@ def main() -> None:
         st.session_state.current_run_id = None
         latest_summary = st.session_state.last_run_summary
         latest_preview = preview_image
+        st.session_state.latest_detection_logs = load_detection_logs()
+        if hasattr(st, "rerun"):
+            st.rerun()
+        else:
+            st.experimental_rerun()
+        return
     except RuntimeError as exc:
         st.error(str(exc))
     finally:
@@ -116,6 +135,9 @@ def main() -> None:
         st.session_state.stop_requested = False
         if st.session_state.get("current_run_id"):
             st.session_state.current_run_id = None
+
+    current_logs = load_detection_logs()
+    st.session_state.latest_detection_logs = current_logs
 
     summary_for_display = latest_summary or st.session_state.get("last_run_summary")
     preview_for_display = latest_preview or st.session_state.get("last_preview_image")
@@ -127,9 +149,10 @@ def main() -> None:
             processed_frames=(summary_for_display or {}).get("processed_frames"),
             fps=(summary_for_display or {}).get("fps"),
             elapsed=(summary_for_display or {}).get("elapsed"),
+            logs_df=current_logs,
         )
     with analytics_tab:
-        render_analytics_dashboard()
+        render_analytics_dashboard(current_logs)
 
 
 if __name__ == "__main__":
