@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Union
 
 import altair as alt
@@ -9,7 +10,7 @@ import pandas as pd
 import streamlit as st
 
 from config import AGE_GENDER_MODEL_PATH, PERSON_DETECTOR_MODEL_PATH
-from data_store import load_detection_logs
+from data_store import initialize_database, load_detection_logs
 
 
 @dataclass
@@ -38,6 +39,9 @@ def ensure_session_state() -> None:
         st.session_state.last_preview_image = None
     if "current_run_id" not in st.session_state:
         st.session_state.current_run_id = None
+    if not st.session_state.get("db_initialized"):
+        initialize_database()
+        st.session_state.db_initialized = True
 
 
 def render_sidebar() -> SidebarConfig:

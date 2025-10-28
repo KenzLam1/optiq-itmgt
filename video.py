@@ -73,6 +73,7 @@ def run_analysis(
     processed_frames = 0
     frame_idx = 0
     stopped_by_user = False
+    flush_threshold = 50
 
     try:
         while True:
@@ -187,6 +188,9 @@ def run_analysis(
                         "frame_height": frame_height,
                     }
                 )
+                if len(log_entries) >= flush_threshold:
+                    append_detection_logs(log_entries)
+                    log_entries.clear()
 
             if total_frames:
                 progress_ratio = min(1.0, frame_idx / total_frames)
@@ -198,6 +202,9 @@ def run_analysis(
             if processed_frames % max(1, preview_stride) == 0:
                 status_placeholder.info(f"Frames processed: {processed_frames}")
     finally:
+        if log_entries:
+            append_detection_logs(log_entries)
+            log_entries.clear()
         cap.release()
 
     elapsed = time.time() - start_time
@@ -215,6 +222,4 @@ def run_analysis(
     else:
         progress_bar.progress(100, text="Analysis complete")
         status_placeholder.success(f"Completed in {elapsed:.1f}s ({fps:.2f} FPS)")
-
-    append_detection_logs(log_entries)
     return detection_rows, preview_image, processed_frames, fps, elapsed

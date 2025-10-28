@@ -33,6 +33,10 @@ def main() -> None:
     last_run_id = (last_summary or {}).get("run_id")
     last_preview_image = st.session_state.get("last_preview_image")
 
+    last_summary = st.session_state.get("last_run_summary")
+    last_run_id = (last_summary or {}).get("run_id")
+    last_preview_image = st.session_state.get("last_preview_image")
+
     if not sidebar.run_clicked:
         detections_tab, analytics_tab = st.tabs(["Detections", "Analytics"])
         with detections_tab:
@@ -48,6 +52,7 @@ def main() -> None:
         return
 
     temp_file: Optional[Path] = None
+    should_rerun = False
     try:
         with st.spinner("Loading detection models..."):
             pipeline = load_pipeline(
@@ -100,18 +105,7 @@ def main() -> None:
         }
         st.session_state.last_preview_image = preview_image
         st.session_state.current_run_id = None
-
-        detections_tab, analytics_tab = st.tabs(["Detections", "Analytics"])
-        with detections_tab:
-            render_detection_log_preview(
-                run_id=run_id,
-                preview_image=preview_image,
-                processed_frames=processed_frames,
-                fps=fps,
-                elapsed=elapsed,
-            )
-        with analytics_tab:
-            render_analytics_dashboard()
+        should_rerun = True
     except RuntimeError as exc:
         st.error(str(exc))
     finally:
@@ -120,6 +114,21 @@ def main() -> None:
         st.session_state.stop_requested = False
         if st.session_state.get("current_run_id"):
             st.session_state.current_run_id = None
+
+    if should_rerun:
+        st.experimental_rerun()
+    else:
+        detections_tab, analytics_tab = st.tabs(["Detections", "Analytics"])
+        with detections_tab:
+            render_detection_log_preview(
+                run_id=last_run_id,
+                preview_image=last_preview_image,
+                processed_frames=(last_summary or {}).get("processed_frames"),
+                fps=(last_summary or {}).get("fps"),
+                elapsed=(last_summary or {}).get("elapsed"),
+            )
+        with analytics_tab:
+            render_analytics_dashboard()
 
 
 if __name__ == "__main__":
