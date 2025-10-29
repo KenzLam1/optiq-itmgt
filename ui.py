@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from config import AGE_GENDER_MODEL_PATH, PERSON_DETECTOR_MODEL_PATH
-from data_store import load_detection_logs
+from data_store import initialize_database, load_detection_logs
 
 
 @dataclass
@@ -27,6 +27,7 @@ class SidebarConfig:
     preview_stride: int
     run_clicked: bool
     stop_clicked: bool
+    clear_db_requested: bool
 
 
 def ensure_session_state() -> None:
@@ -38,6 +39,15 @@ def ensure_session_state() -> None:
         st.session_state.last_preview_image = None
     if "current_run_id" not in st.session_state:
         st.session_state.current_run_id = None
+    if "refresh_requested" not in st.session_state:
+        st.session_state.refresh_requested = False
+    if "show_clear_prompt" not in st.session_state:
+        st.session_state.show_clear_prompt = False
+    if "clear_confirmed" not in st.session_state:
+        st.session_state.clear_confirmed = False
+    if not st.session_state.get("db_initialized"):
+        initialize_database()
+        st.session_state.db_initialized = True
 
 
 def render_sidebar() -> SidebarConfig:
@@ -74,6 +84,19 @@ def render_sidebar() -> SidebarConfig:
         preview_stride = st.slider("Preview interval", 1, 30, 5)
         run_clicked = st.button("Run analysis", type="primary")
         stop_clicked = st.button("Stop analysis", type="secondary")
+        clear_db_requested = st.button("⚠️ Clear detection logs", type="secondary", key="clear_logs_button")
+        if clear_db_requested:
+            st.session_state.show_clear_prompt = True
+
+        if st.session_state.get("show_clear_prompt"):
+            st.warning("Clearing logs will delete all stored detections and analytics history.")
+            confirm = st.button("Confirm clear", type="primary", key="confirm_clear_logs")
+            cancel = st.button("Cancel", type="secondary", key="cancel_clear_logs")
+            if confirm:
+                st.session_state.clear_confirmed = True
+                st.session_state.show_clear_prompt = False
+            elif cancel:
+                st.session_state.show_clear_prompt = False
 
     return SidebarConfig(
         device_choice=device_choice,
@@ -89,6 +112,7 @@ def render_sidebar() -> SidebarConfig:
         preview_stride=preview_stride,
         run_clicked=run_clicked,
         stop_clicked=stop_clicked,
+        clear_db_requested=clear_db_requested,
     )
 
 
@@ -161,20 +185,15 @@ def _apply_filters(
     return filtered
 
 
-def render_analytics_dashboard() -> None:
-    df = load_detection_logs().copy()
+def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
+    df = logs_df.copy() if logs_df is not None else load_detection_logs().copy()
     if df.empty:
         st.info("No detection logs available yet. Run an analysis to populate the dataset.")
         return
 
-    df["logged_at"] = pd.to_datetime(df["logged_at"], errors="coerce")
-    df = df.dropna(subset=["logged_at"])
-    if df.empty:
-        st.info("Detection logs are present but timestamps could not be parsed.")
-        return
-
-    df["date"] = df["logged_at"].dt.date
-    df["minutes"] = df["logged_at"].dt.hour * 60 + df["logged_at"].dt.minute
+    df["logged_at_local"] = df["logged_at"].dt.tz_localize(None)
+    df["date"] = df["logged_at_local"].dt.date
+    df["minutes"] = df["logged_at_local"].dt.hour * 60 + df["logged_at_local"].dt.minute
     df["gender"] = df["gender"].fillna("Unknown")
     df["age_estimate"] = pd.to_numeric(df["age_estimate"], errors="coerce")
 
@@ -247,7 +266,7 @@ def render_analytics_dashboard() -> None:
         st.info("No detections match the selected filters.")
     else:
         traffic = (
-            filtered.set_index("logged_at")
+            filtered.set_index("logged_at_local")
             .resample(interval_choice)
             .size()
             .reset_index(name="detections")
@@ -259,9 +278,9 @@ def render_analytics_dashboard() -> None:
                 alt.Chart(traffic)
                 .mark_line(point=True)
                 .encode(
-                    x=alt.X("logged_at:T", title="Timestamp"),
+                    x=alt.X("logged_at_local:T", title="Timestamp"),
                     y=alt.Y("detections:Q", title="Detections"),
-                    tooltip=["logged_at:T", "detections:Q"],
+                    tooltip=["logged_at_local:T", "detections:Q"],
                 )
             )
             st.altair_chart(traffic_chart, use_container_width=True)
@@ -353,6 +372,7 @@ def render_detection_log_preview(
     processed_frames: Optional[int],
     fps: Optional[float],
     elapsed: Optional[float],
+    logs_df: Optional[pd.DataFrame] = None,
 ) -> None:
     st.subheader("Latest Detections Preview")
 
@@ -368,7 +388,7 @@ def render_detection_log_preview(
     if elapsed is None and session_summary:
         elapsed = session_summary.get("elapsed")
 
-    logs = load_detection_logs().copy()
+    logs = logs_df.copy() if logs_df is not None else load_detection_logs().copy()
     if logs.empty:
         if preview_image is not None:
             st.image(
@@ -377,12 +397,6 @@ def render_detection_log_preview(
                 use_container_width=True,
             )
         st.info("No detection logs recorded yet. Run an analysis to populate the dataset.")
-        return
-
-    logs["logged_at"] = pd.to_datetime(logs["logged_at"], errors="coerce")
-    logs = logs.dropna(subset=["logged_at"])
-    if logs.empty:
-        st.info("Detection logs exist but timestamps could not be parsed.")
         return
 
     logs = logs.sort_values("logged_at")
@@ -394,6 +408,7 @@ def render_detection_log_preview(
         fps = fps or session_summary.get("fps")
         elapsed = elapsed or session_summary.get("elapsed")
     run_logs = logs[logs["run_id"] == selected_run_id].copy()
+    run_logs["logged_at_display"] = run_logs["logged_at"].dt.tz_localize(None)
 
     total_runs = logs["run_id"].nunique()
     st.caption(
@@ -413,7 +428,7 @@ def render_detection_log_preview(
     metrics[1].metric("Unique labels", run_logs["label"].nunique())
     metrics[2].metric(
         "Avg confidence",
-        f"{run_logs['confidence'].mean():.1%}" if not run_logs.empty else "—",
+        f"{run_logs['confidence'].mean():.1%}" if not run_logs.empty else "N/A",
     )
     metrics[3].metric(
         "Sessions logged",
@@ -434,12 +449,16 @@ def render_detection_log_preview(
         "processed_frame",
     ]
     existing_cols = [col for col in display_cols if col in run_logs.columns]
-    preview_df = run_logs[existing_cols].sort_values("logged_at", ascending=False)
+    preview_df = run_logs[existing_cols].sort_values("logged_at", ascending=False).copy()
+    if "logged_at" in preview_df.columns:
+        preview_df["logged_at"] = preview_df["logged_at"].dt.tz_localize(None).dt.strftime("%Y-%m-%d %H:%M:%S")
     st.dataframe(preview_df, use_container_width=True, hide_index=True)
 
+    download_df = logs.copy()
+    download_df["logged_at"] = download_df["logged_at"].dt.tz_localize(None)
     st.download_button(
         "Download full detection log",
-        data=logs.to_csv(index=False).encode("utf-8"),
+        data=download_df.to_csv(index=False).encode("utf-8"),
         file_name="detections_log.csv",
         mime="text/csv",
     )
