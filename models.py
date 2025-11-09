@@ -1,3 +1,4 @@
+import logging
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -5,6 +6,29 @@ import numpy as np
 import torch
 
 from detections import DetectionResult
+
+logger = logging.getLogger(__name__)
+
+
+def _select_device(explicit_device: Optional[str]) -> str:
+    """Resolve the best runtime device, falling back gracefully."""
+    if explicit_device:
+        return explicit_device
+
+    try:
+        if torch.cuda.is_available():
+            return "cuda:0"
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        mps_backend = getattr(torch.backends, "mps", None)
+        if mps_backend is not None and mps_backend.is_available():
+            return "mps"
+    except Exception:  # noqa: BLE001
+        pass
+
+    return "cpu"
 
 
 class YOLOAgeGenderDetector:
@@ -30,7 +54,7 @@ class YOLOAgeGenderDetector:
                 "Place the model file alongside main.py or provide an absolute path."
             )
 
-        self.device = device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device = _select_device(device)
         self.model = YOLO(model_path)
 
         try:
@@ -38,6 +62,7 @@ class YOLOAgeGenderDetector:
         except AttributeError:
             self.model.model.to(self.device)
 
+        logger.info("Age/Gender detector initialised on device '%s'", self.device)
         self.names = getattr(self.model.model, "names", getattr(self.model, "names", {}))
         self.conf_threshold = conf_threshold
         self.imgsz = imgsz
@@ -155,7 +180,7 @@ class YOLOPersonDetector:
                 "Download a YOLO model (for example yolov8n.pt) and provide its path."
             )
 
-        self.device = device or ("cuda:0" if torch.cuda.is_available() else "cpu")
+        self.device = _select_device(device)
         self.model = YOLO(model_path)
 
         try:
@@ -163,6 +188,7 @@ class YOLOPersonDetector:
         except AttributeError:
             self.model.model.to(self.device)
 
+        logger.info("Person detector initialised on device '%s'", self.device)
         self.names = getattr(self.model.model, "names", getattr(self.model, "names", {}))
         self.person_class_ids = self._resolve_person_class_ids()
         self.conf_threshold = conf_threshold
@@ -238,4 +264,3 @@ class YOLOPersonDetector:
             )
 
         return detections
-

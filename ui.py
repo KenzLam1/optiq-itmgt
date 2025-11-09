@@ -11,10 +11,25 @@ import streamlit as st
 from config import AGE_GENDER_MODEL_PATH, PERSON_DETECTOR_MODEL_PATH
 from data_store import initialize_database, load_detection_logs
 
+try:
+    import torch
+except Exception:  # noqa: BLE001
+    torch = None  # type: ignore[assignment]
+
+
+DEVICE_LABELS = {
+    "auto": "Auto (best available)",
+    "cpu": "CPU only",
+    "cuda": "NVIDIA CUDA",
+    "mps": "Apple Silicon (MPS)",
+}
+
 
 @dataclass
 class SidebarConfig:
     device_choice: str
+    enable_age_detector: bool
+    enable_person_detector: bool
     age_conf: float
     person_conf: float
     imgsz: int
@@ -50,11 +65,56 @@ def ensure_session_state() -> None:
         st.session_state.db_initialized = True
 
 
+def _available_device_choices() -> tuple[list[str], bool]:
+    """Return supported device options and whether MPS is available."""
+    options: List[str] = ["auto", "cpu"]
+    mps_available = False
+
+    if torch is None:
+        return options, mps_available
+
+    try:
+        if torch.cuda.is_available():
+            options.append("cuda")
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        mps_backend = getattr(torch.backends, "mps", None)
+        if mps_backend is not None and mps_backend.is_available():
+            options.append("mps")
+            mps_available = True
+    except Exception:  # noqa: BLE001
+        pass
+
+    return options, mps_available
+
+
 def render_sidebar() -> SidebarConfig:
     with st.sidebar:
         st.header("Models")
         st.caption("Using default model weight files bundled with the app.")
-        device_choice = st.selectbox("Device", options=["auto", "cpu", "cuda"], index=0)
+        device_options, mps_available = _available_device_choices()
+        device_choice = st.selectbox(
+            "Device",
+            options=device_options,
+            index=0,
+            format_func=lambda opt: DEVICE_LABELS.get(opt, opt.upper()),
+        )
+        if mps_available:
+            st.caption("Apple Silicon detected — pick 'Apple Silicon (MPS)' for higher FPS on Mac.")
+        enable_age_detector = st.toggle(
+            "Run age/gender detector",
+            value=True,
+            help="Disable to skip age/gender predictions (person counts will still run if enabled).",
+        )
+        enable_person_detector = st.toggle(
+            "Run person detector (second model)",
+            value=True,
+            help="Disable to run only the age/gender model for higher FPS on slower machines.",
+        )
+        if not enable_age_detector and not enable_person_detector:
+            st.error("Enable at least one detector to run analysis.")
         age_conf = st.slider("Age/Gender confidence", 0.05, 0.95, 0.40, 0.05)
         person_conf = st.slider("Person confidence", 0.05, 0.95, 0.35, 0.05)
         imgsz = st.slider("Image size", 320, 960, 640, 32)
@@ -100,6 +160,8 @@ def render_sidebar() -> SidebarConfig:
 
     return SidebarConfig(
         device_choice=device_choice,
+        enable_age_detector=enable_age_detector,
+        enable_person_detector=enable_person_detector,
         age_conf=age_conf,
         person_conf=person_conf,
         imgsz=imgsz,
