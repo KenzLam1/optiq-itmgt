@@ -10,6 +10,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
+import supervision as sv
 
 from data_store import append_detection_logs
 from pipeline import VisionPipeline
@@ -23,6 +24,126 @@ def _call_with_width(fn: Callable[..., Any], *args: Any, stretch: bool = True, *
         if "width" not in str(exc):
             raise
         return fn(*args, use_container_width=stretch, **kwargs)
+
+
+ZONE_COLORS = [
+    "#ff6b6b",
+    "#f4a261",
+    "#ffd166",
+    "#06d6a0",
+    "#118ab2",
+    "#8338ec",
+]
+
+
+class ZoneManager:
+    def __init__(self, definitions: Optional[List[Dict[str, Any]]] = None) -> None:
+        self.definitions = definitions or []
+        self.instances: List[Dict[str, Any]] = []
+        self.frame_key: Optional[Tuple[int, int]] = None
+        self.frame_dims: Optional[Tuple[int, int]] = None
+
+    def has_zones(self) -> bool:
+        return bool(self.definitions)
+
+    def prepare(self, frame_width: int, frame_height: int) -> None:
+        if not self.has_zones():
+            return
+        key = (frame_width, frame_height)
+        if self.frame_key == key:
+            return
+        self.frame_key = key
+        self.frame_dims = (frame_width, frame_height)
+        self.instances = []
+        for idx, definition in enumerate(self.definitions):
+            raw_points = definition.get("points") or []
+            polygon = np.array(
+                [
+                    [float(pt["x"]) * frame_width, float(pt["y"]) * frame_height]
+                    for pt in raw_points
+                    if "x" in pt and "y" in pt
+                ],
+                dtype=np.float32,
+            )
+            if polygon.size == 0:
+                continue
+            epsilon = 1e-3
+            polygon[:, 0] = np.clip(polygon[:, 0], 0.0, max(frame_width - 1 - epsilon, 0.0))
+            polygon[:, 1] = np.clip(polygon[:, 1], 0.0, max(frame_height - 1 - epsilon, 0.0))
+            if polygon.shape[0] < 3:
+                continue
+            try:
+                zone = sv.PolygonZone(polygon=polygon, frame_resolution_wh=(frame_width, frame_height))
+            except TypeError as exc:
+                if "frame_resolution_wh" in str(exc):
+                    zone = sv.PolygonZone(polygon=polygon)
+                else:
+                    raise
+            color_hex = ZONE_COLORS[idx % len(ZONE_COLORS)]
+            annotator = sv.PolygonZoneAnnotator(
+                zone=zone,
+                color=sv.Color.from_hex(color_hex),
+                thickness=2,
+                text_thickness=1,
+                text_scale=0.5,
+            )
+            self.instances.append(
+                {
+                    "name": definition.get("name", f"Zone {idx + 1}"),
+                    "zone": zone,
+                    "annotator": annotator,
+                }
+            )
+
+    def annotate(self, frame: np.ndarray) -> np.ndarray:
+        if not self.instances:
+            return frame
+        annotated = frame
+        for instance in self.instances:
+            annotated = instance["annotator"].annotate(scene=annotated)
+        return annotated
+
+    def assign(self, detections: List[Any]) -> List[Optional[str]]:
+        if not self.instances or not detections:
+            return [None] * len(detections)
+        xyxy = np.array(
+            [
+                [
+                    det.bbox[0],
+                    det.bbox[1],
+                    det.bbox[0] + det.bbox[2],
+                    det.bbox[1] + det.bbox[3],
+                ]
+                for det in detections
+            ],
+            dtype=np.float32,
+        )
+        if xyxy.size == 0:
+            return [None] * len(detections)
+        if self.frame_dims is not None:
+            frame_width, frame_height = self.frame_dims
+            if frame_width > 0 and frame_height > 0:
+                max_x = max(frame_width - 1.001, 0.0)
+                max_y = max(frame_height - 1.001, 0.0)
+                xyxy[:, [0, 2]] = np.clip(xyxy[:, [0, 2]], 0.0, max_x)
+                xyxy[:, [1, 3]] = np.clip(xyxy[:, [1, 3]], 0.0, max_y)
+        assignments: List[Optional[str]] = [None] * len(detections)
+        for instance in self.instances:
+            zone_xyxy = xyxy.copy()
+            zone_resolution = getattr(instance["zone"], "frame_resolution_wh", None)
+            if zone_resolution:
+                zone_width, zone_height = zone_resolution
+                if zone_width > 0 and zone_height > 0:
+                    max_x = max(zone_width - 1.001, 0.0)
+                    max_y = max(zone_height - 1.001, 0.0)
+                    zone_xyxy[:, [0, 2]] = np.clip(zone_xyxy[:, [0, 2]], 0.0, max_x)
+                    zone_xyxy[:, [1, 3]] = np.clip(zone_xyxy[:, [1, 3]], 0.0, max_y)
+            zone_detections = sv.Detections(xyxy=zone_xyxy)
+            mask = instance["zone"].trigger(detections=zone_detections)
+            for idx, inside in enumerate(mask):
+                if inside and assignments[idx] is None:
+                    assignments[idx] = instance["name"]
+        return assignments
 
 
 def _write_upload_to_temp(uploaded_file: Any) -> Path:
@@ -70,6 +191,7 @@ def run_analysis(
     status_placeholder,
     stop_requested_fn: Callable[[], bool],
     run_id: str,
+    zones: Optional[List[Dict[str, Any]]] = None,
 ) -> Tuple[List[Dict[str, Union[str, float, int]]], Optional[np.ndarray], int, float, float]:
     cap = cv2.VideoCapture(source)
     if not cap.isOpened():
@@ -82,6 +204,7 @@ def run_analysis(
     preview_image: Optional[np.ndarray] = None
     log_entries: List[Dict[str, Any]] = []
     recent_tracks: List[Dict[str, Any]] = []
+    zone_manager = ZoneManager(zones)
 
     start_time = time.time()
     processed_frames = 0
@@ -100,7 +223,9 @@ def run_analysis(
                 break
 
             frame_height, frame_width = frame.shape[:2]
+            zone_manager.prepare(frame_width, frame_height)
             annotated, detections = pipeline.process(frame, frame_idx)
+            annotated = zone_manager.annotate(annotated)
             frame_idx += 1
 
             if frame_idx % pipeline.frame_interval != 0:
@@ -135,7 +260,9 @@ def run_analysis(
                     channels="RGB",
                 )
 
-            for det in detections:
+            zone_hits = zone_manager.assign(detections)
+
+            for idx, det in enumerate(detections):
                 label_text = det.gender_label or det.class_label or "Person"
                 if isinstance(label_text, str):
                     label_text = label_text.title()
@@ -182,6 +309,7 @@ def run_analysis(
                         "bbox_y": bbox_y,
                         "bbox_w": bbox_w,
                         "bbox_h": bbox_h,
+                        "zone": zone_hits[idx] if idx < len(zone_hits) else None,
                     }
                 )
 
@@ -205,6 +333,7 @@ def run_analysis(
                         "center_y": normalized_center[1],
                         "frame_width": frame_width,
                         "frame_height": frame_height,
+                        "zone": zone_hits[idx] if idx < len(zone_hits) else None,
                     }
                 )
                 if len(log_entries) >= flush_threshold:

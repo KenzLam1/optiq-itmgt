@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, Iterable, Sequence
+from typing import Any, Dict, Iterable, List, Sequence
 
 import pandas as pd
 
@@ -30,7 +31,10 @@ TABLE_COLUMNS: Sequence[str] = (
     "center_y",
     "frame_width",
     "frame_height",
+    "zone",
 )
+
+ZONES_TABLE_NAME = "zones"
 
 
 def _ensure_data_dir() -> None:
@@ -66,15 +70,33 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
             center_x REAL,
             center_y REAL,
             frame_width INTEGER,
-            frame_height INTEGER
+            frame_height INTEGER,
+            zone TEXT
         );
         """
     )
+    existing_columns = {
+        row[1] for row in conn.execute(f"PRAGMA table_info({TABLE_NAME});")
+    }
+    if "zone" not in existing_columns:
+        conn.execute(f"ALTER TABLE {TABLE_NAME} ADD COLUMN zone TEXT;")
     conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_logged_at ON {TABLE_NAME} (logged_at);"
     )
     conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_run_id ON {TABLE_NAME} (run_id);"
+    )
+    conn.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {ZONES_TABLE_NAME} (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL,
+            points TEXT NOT NULL,
+            frame_width INTEGER NOT NULL,
+            frame_height INTEGER NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        );
+        """
     )
 
 
@@ -137,6 +159,8 @@ def load_detection_logs() -> pd.DataFrame:
     if df.empty:
         return df
     df["logged_at"] = df["logged_at"].dt.tz_convert("Asia/Manila")
+    if "zone" not in df.columns:
+        df["zone"] = None
     return df
 
 
@@ -179,4 +203,65 @@ def _bootstrap_from_legacy_csv_if_needed() -> None:
             for row in legacy_df.to_dict(orient="records")
         ]
         conn.executemany(insert_sql, values)
+        conn.commit()
+
+
+def load_zones() -> List[Dict[str, Any]]:
+    if not DB_PATH.exists():
+        return []
+    with _connect() as conn:
+        _ensure_schema(conn)
+        rows = conn.execute(
+            f"""
+            SELECT id, name, points, frame_width, frame_height, created_at
+            FROM {ZONES_TABLE_NAME}
+            ORDER BY name;
+            """
+        ).fetchall()
+    zones: List[Dict[str, Any]] = []
+    for row in rows:
+        points = json.loads(row[2]) if row[2] else []
+        zones.append(
+            {
+                "id": row[0],
+                "name": row[1],
+                "points": points,
+                "frame_width": row[3],
+                "frame_height": row[4],
+                "created_at": row[5],
+            }
+        )
+    return zones
+
+
+def upsert_zone(name: str, points: Sequence[Dict[str, float]], frame_width: int, frame_height: int) -> None:
+    normalized_points = [
+        {"x": float(point["x"]), "y": float(point["y"])}
+        for point in points
+    ]
+    payload = json.dumps(normalized_points)
+    with _connect() as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            f"""
+            INSERT INTO {ZONES_TABLE_NAME} (name, points, frame_width, frame_height)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(name) DO UPDATE SET
+                points=excluded.points,
+                frame_width=excluded.frame_width,
+                frame_height=excluded.frame_height,
+                created_at=datetime('now');
+            """,
+            (name, payload, frame_width, frame_height),
+        )
+        conn.commit()
+
+
+def delete_zone(zone_id: int) -> None:
+    with _connect() as conn:
+        _ensure_schema(conn)
+        conn.execute(
+            f"DELETE FROM {ZONES_TABLE_NAME} WHERE id = ?;",
+            (zone_id,),
+        )
         conn.commit()

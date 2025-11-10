@@ -7,9 +7,59 @@ import datetime as dt
 import numpy as np
 import pandas as pd
 import streamlit as st
+from PIL import Image
+
+try:
+    from streamlit_drawable_canvas import st_canvas
+
+    _CANVAS_AVAILABLE = True
+    try:
+        from streamlit.elements import image as _st_image_module  # type: ignore[attr-defined]
+        from streamlit.elements.lib.image_utils import image_to_url as _native_image_to_url
+        from streamlit.elements.lib.layout_utils import LayoutConfig as _LayoutConfig
+    except Exception:  # noqa: BLE001
+        _st_image_module = None
+        _native_image_to_url = None
+        _LayoutConfig = None
+    else:
+        if (
+            _st_image_module is not None
+            and _native_image_to_url is not None
+            and _LayoutConfig is not None
+            and not hasattr(_st_image_module, "image_to_url")
+        ):
+
+            def _legacy_image_to_url(
+                image,
+                width,
+                clamp=False,
+                channels="RGB",
+                output_format="PNG",
+                image_id=None,
+            ):
+                layout_cfg = _LayoutConfig(width=width if width is not None else "content")
+                return _native_image_to_url(
+                    image=image,
+                    layout_config=layout_cfg,
+                    clamp=clamp,
+                    channels=channels,
+                    output_format=output_format,
+                    image_id=image_id or "",
+                )
+
+            setattr(_st_image_module, "image_to_url", _legacy_image_to_url)
+except ModuleNotFoundError:
+    st_canvas = None  # type: ignore[assignment]
+    _CANVAS_AVAILABLE = False
 
 from config import AGE_GENDER_MODEL_PATH, PERSON_DETECTOR_MODEL_PATH
-from data_store import initialize_database, load_detection_logs
+from data_store import (
+    delete_zone,
+    initialize_database,
+    load_detection_logs,
+    load_zones,
+    upsert_zone,
+)
 
 try:
     import torch
@@ -58,6 +108,55 @@ class SidebarConfig:
     run_clicked: bool
     stop_clicked: bool
     clear_db_requested: bool
+
+
+def _parse_canvas_polygon(json_data: Optional[Dict[str, Any]]) -> List[tuple[float, float]]:
+    if not isinstance(json_data, dict):
+        return []
+    objects = json_data.get("objects") or []
+    if not isinstance(objects, list):
+        return []
+    points: List[tuple[float, float]] = []
+    for obj in reversed(objects):
+        if not isinstance(obj, dict):
+            continue
+        if not obj.get("visible", True):
+            continue
+        if obj.get("type") not in {"path", "polygon", "polyline"}:
+            continue
+        path = obj.get("path") or []
+        if not path:
+            continue
+        for segment in path:
+            if not segment:
+                continue
+            command = segment[0]
+            if command in {"M", "L"} and len(segment) >= 3:
+                points.append((float(segment[1]), float(segment[2])))
+        if len(points) >= 2 and points[0] == points[-1]:
+            points = points[:-1]
+        if points:
+            break
+    return points
+
+
+def _normalize_polygon(points: List[tuple[float, float]], width: int, height: int) -> List[Dict[str, float]]:
+    if width <= 0 or height <= 0:
+        return []
+    normalized: List[Dict[str, float]] = []
+    for x, y in points:
+        nx = float(np.clip(x / width, 0.0, 1.0))
+        ny = float(np.clip(y / height, 0.0, 1.0))
+        normalized.append({"x": nx, "y": ny})
+    return normalized
+
+
+def _blank_canvas_state() -> Dict[str, Any]:
+    return {"version": "4.4.0", "objects": []}
+
+
+def _increment_canvas_key() -> None:
+    st.session_state["zone_canvas_key"] = st.session_state.get("zone_canvas_key", 0) + 1
 
 
 def ensure_session_state() -> None:
@@ -257,6 +356,117 @@ def _apply_filters(
     return filtered
 
 
+def render_zone_designer() -> None:
+    st.subheader("Zone Designer")
+    st.caption("Draw polygonal regions on a sample frame to capture per-zone counts during analysis runs.")
+
+    zones = load_zones()
+    if "zone_canvas_state" not in st.session_state:
+        st.session_state.zone_canvas_state = _blank_canvas_state()
+        st.session_state.zone_canvas_source = None
+    if "zone_canvas_key" not in st.session_state:
+        st.session_state["zone_canvas_key"] = 0
+
+    if zones:
+        zone_summary = pd.DataFrame(
+            [
+                {
+                    "Zone": zone["name"],
+                    "Vertices": len(zone.get("points", [])),
+                    "Created": zone.get("created_at", ""),
+                }
+                for zone in zones
+            ]
+        )
+        _call_with_width(st.dataframe, zone_summary, hide_index=True)
+        st.write("Remove zones you no longer need:")
+        for zone in zones:
+            if st.button(f"Delete zone '{zone['name']}'", key=f"delete_zone_{zone['id']}"):
+                delete_zone(zone["id"])
+                st.success(f"Zone '{zone['name']}' deleted.")
+                st.session_state.zone_canvas_state = _blank_canvas_state()
+                st.session_state.zone_canvas_source = None
+                _increment_canvas_key()
+                st.rerun()
+    else:
+        st.info("No zones defined yet. Create your first zone below.")
+
+    st.divider()
+    st.markdown("### Create or update a zone")
+    zone_name = st.text_input("Zone name")
+    reference_image = st.file_uploader(
+        "Upload an image that represents the camera/view for this zone",
+        type=["png", "jpg", "jpeg", "bmp", "webp"],
+        key="zone_image_uploader",
+    )
+
+    polygon_points: List[tuple[float, float]] = []
+    frame_dims: Optional[tuple[int, int]] = None
+    canvas_result = None
+    if reference_image is not None:
+        current_source = getattr(reference_image, "name", None)
+        if st.session_state.zone_canvas_source != current_source:
+            st.session_state.zone_canvas_state = _blank_canvas_state()
+            st.session_state.zone_canvas_source = current_source
+            _increment_canvas_key()
+        try:
+            base_image = Image.open(reference_image).convert("RGB")
+        except Exception:  # noqa: BLE001
+            st.error("Unable to load the selected image. Please try a different file.")
+        else:
+            frame_width, frame_height = base_image.size
+            if frame_width <= 0 or frame_height <= 0:
+                st.error("The uploaded image has invalid dimensions.")
+            else:
+                frame_dims = (frame_width, frame_height)
+                st.caption("Draw the polygon directly on the image. Double-click to close the shape.")
+                canvas_key = st.session_state.get("zone_canvas_key", 0)
+                canvas_result = st_canvas(
+                    fill_color="rgba(255, 107, 107, 0.25)",
+                    stroke_color="#ff6b6b",
+                    stroke_width=2,
+                    background_image=base_image,
+                    height=frame_height,
+                    width=frame_width,
+                    drawing_mode="polygon",
+                    update_streamlit=True,
+                    key=f"zone_canvas_{canvas_key}",
+                    initial_drawing=st.session_state.zone_canvas_state,
+                )
+                session_objects = st.session_state.zone_canvas_state.get("objects") or []
+                if canvas_result is None:
+                    if session_objects:
+                        st.session_state.zone_canvas_state = _blank_canvas_state()
+                        _increment_canvas_key()
+                        st.rerun()
+                else:
+                    json_data = getattr(canvas_result, "json_data", None)
+                    objects = (json_data or {}).get("objects", [])
+                    if not objects:
+                        if session_objects:
+                            st.session_state.zone_canvas_state = _blank_canvas_state()
+                            _increment_canvas_key()
+                            st.rerun()
+                    else:
+                        st.session_state.zone_canvas_state = json_data
+                polygon_points = _parse_canvas_polygon(getattr(canvas_result, "json_data", None))
+                if polygon_points:
+                    st.success(f"Captured {len(polygon_points)} vertices.")
+                else:
+                    st.info("Use the canvas to draw the zone polygon.")
+
+    save_disabled = not zone_name.strip() or frame_dims is None or len(polygon_points) < 3
+    if st.button("Save zone", type="primary", disabled=save_disabled):
+        assert frame_dims is not None  # for type checkers
+        normalized = _normalize_polygon(polygon_points, frame_dims[0], frame_dims[1])
+        upsert_zone(zone_name.strip(), normalized, frame_dims[0], frame_dims[1])
+        st.success(f"Zone '{zone_name.strip()}' saved.")
+        _increment_canvas_key()
+        st.session_state.zone_canvas_state = _blank_canvas_state()
+        st.session_state.zone_canvas_source = None
+        st.rerun()
+
+
 def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
     df = logs_df.copy() if logs_df is not None else load_detection_logs().copy()
     if df.empty:
@@ -266,6 +476,8 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
     df["logged_at_local"] = df["logged_at"].dt.tz_localize(None)
     df["date"] = df["logged_at_local"].dt.date
     df["minutes"] = df["logged_at_local"].dt.hour * 60 + df["logged_at_local"].dt.minute
+    if "zone" not in df.columns:
+        df["zone"] = None
     df["gender"] = df["gender"].fillna("Unknown")
     df["age_estimate"] = pd.to_numeric(df["age_estimate"], errors="coerce")
 
@@ -357,34 +569,30 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
             )
             _call_with_width(st.altair_chart, traffic_chart)
 
-    st.subheader("Detection Heatmap")
-    heatmap_bins = st.slider("Heatmap granularity", min_value=5, max_value=30, value=10)
-    heat_df = filtered.dropna(subset=["center_x", "center_y"])
-    if heat_df.empty:
-        st.info("No spatial data available for the selected filters.")
+    st.subheader("Zone Heatmap")
+    zone_counts = (
+        filtered.assign(zone_label=filtered["zone"].fillna("Unassigned"))
+        .groupby("zone_label")
+        .size()
+        .reset_index(name="count")
+        .rename(columns={"zone_label": "zone"})
+    )
+    zone_counts = zone_counts[zone_counts["count"] > 0]
+    if zone_counts.empty:
+        st.info("No zone activity recorded for the selected filters.")
     else:
-        heat_df = heat_df.copy()
-        heat_df["x_bin"] = np.clip((heat_df["center_x"] * heatmap_bins).astype(int), 0, heatmap_bins - 1)
-        heat_df["y_bin"] = np.clip((heat_df["center_y"] * heatmap_bins).astype(int), 0, heatmap_bins - 1)
-        heat_counts = (
-            heat_df.groupby(["x_bin", "y_bin"])
-            .size()
-            .reset_index(name="count")
-        )
-        if heat_counts.empty:
-            st.info("No detections to plot in the heatmap.")
-        else:
-            heat_chart = (
-                alt.Chart(heat_counts)
-                .mark_rect()
-                .encode(
-                    x=alt.X("x_bin:O", title="Horizontal zone"),
-                    y=alt.Y("y_bin:O", title="Vertical zone", sort="descending"),
-                    color=alt.Color("count:Q", title="Detections"),
-                    tooltip=["x_bin:O", "y_bin:O", "count:Q"],
-                )
+        zone_counts["row"] = "Detections"
+        heat_chart = (
+            alt.Chart(zone_counts)
+            .mark_rect()
+            .encode(
+                x=alt.X("zone:N", title="Zone"),
+                y=alt.Y("row:N", title=None, axis=None),
+                color=alt.Color("count:Q", title="Detections", scale=alt.Scale(scheme="inferno")),
+                tooltip=["zone:N", "count:Q"],
             )
-            _call_with_width(st.altair_chart, heat_chart)
+        )
+        _call_with_width(st.altair_chart, heat_chart)
 
     st.subheader("Age Distribution")
     age_df = filtered.dropna(subset=["age_estimate"])
@@ -516,6 +724,7 @@ def render_detection_log_preview(
         "gender",
         "age_range",
         "age_estimate",
+        "zone",
         "confidence",
         "frame_idx",
         "processed_frame",

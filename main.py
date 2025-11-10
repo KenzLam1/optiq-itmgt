@@ -4,11 +4,12 @@ from typing import Optional
 
 import streamlit as st
 
-from data_store import clear_detection_logs, load_detection_logs
+from data_store import clear_detection_logs, load_detection_logs, load_zones
 from pipeline import load_pipeline
 from ui import (
     ensure_session_state,
     get_model_paths,
+    render_zone_designer,
     render_intro,
     render_detection_log_preview,
     render_analytics_dashboard,
@@ -47,8 +48,8 @@ def main() -> None:
     if run_clicked:
         st.session_state.stop_requested = False
 
-    run_tab, preview_tab, analytics_tab = st.tabs(
-        ["Run Analysis", "Latest Detections", "Analytics"]
+    run_tab, zones_tab, preview_tab, analytics_tab = st.tabs(
+        ["Run Analysis", "Zones", "Latest Detections", "Analytics"]
     )
 
     with run_tab:
@@ -92,6 +93,7 @@ def main() -> None:
                 run_id = uuid.uuid4().hex
                 st.session_state.current_run_id = run_id
 
+                zone_definitions = load_zones()
                 results = run_analysis(
                     pipeline=pipeline,
                     source=source,
@@ -101,6 +103,7 @@ def main() -> None:
                     status_placeholder=status_placeholder,
                     stop_requested_fn=lambda: st.session_state.get("stop_requested", False),
                     run_id=run_id,
+                    zones=zone_definitions,
                 )
                 detection_rows, preview_image, processed_frames, fps, elapsed = results
 
@@ -145,6 +148,9 @@ def main() -> None:
     current_logs = st.session_state.get("latest_detection_logs", current_logs)
     summary_for_display = st.session_state.get("last_run_summary")
     preview_for_display = st.session_state.get("last_preview_image")
+
+    with zones_tab:
+        render_zone_designer()
 
     with preview_tab:
         render_detection_log_preview(
