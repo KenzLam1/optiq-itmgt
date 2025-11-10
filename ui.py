@@ -132,12 +132,12 @@ def render_sidebar() -> SidebarConfig:
             st.error("Enable at least one detector to run analysis.")
         age_conf = st.slider("Age/Gender confidence", 0.05, 0.95, 0.40, 0.05)
         person_conf = st.slider("Person confidence", 0.05, 0.95, 0.35, 0.05)
-        imgsz = st.slider("Image size", 320, 960, 640, 32)
+        imgsz = 640
 
         st.header("Capture source")
         source_type = st.selectbox(
             "Source type",
-            options=["Upload video", "Webcam", "Video file (path)", "RTSP / CCTV"],
+            options=["Upload video", "Webcam"],
             index=0,
         )
         uploaded_file = None
@@ -149,14 +149,9 @@ def render_sidebar() -> SidebarConfig:
             uploaded_file = st.file_uploader("Select a video file", type=["mp4", "mov", "mkv", "avi"])
         elif source_type == "Webcam":
             camera_index = st.number_input("Camera index", min_value=0, max_value=10, value=0, step=1)
-        elif source_type == "Video file (path)":
-            file_path = st.text_input("Absolute or relative file path")
-        else:
-            stream_url = st.text_input("RTSP / CCTV URL", value="rtsp://user:pass@host:554/stream")
 
-        st.header("Processing")
-        frame_skip = st.slider("Frame skip", 1, 10, 1)
-        preview_stride = st.slider("Preview interval", 1, 30, 5)
+        frame_skip = 1
+        preview_stride = 1
         run_clicked = st.button("Run analysis", type="primary")
         stop_clicked = st.button("Stop analysis", type="secondary")
         clear_db_requested = st.button("⚠️ Clear detection logs", type="secondary", key="clear_logs_button")
