@@ -17,6 +17,21 @@ except Exception:  # noqa: BLE001
     torch = None  # type: ignore[assignment]
 
 
+def _stretch_value(stretch: bool) -> str:
+    return "stretch" if stretch else "content"
+
+
+def _call_with_width(fn: Any, *args: Any, stretch: bool = True, **kwargs: Any) -> Any:
+    """Try the modern width API and gracefully fall back for older Streamlit builds."""
+    width_value = _stretch_value(stretch)
+    try:
+        return fn(*args, width=width_value, **kwargs)
+    except TypeError as exc:
+        if "width" not in str(exc):
+            raise
+        return fn(*args, use_container_width=stretch, **kwargs)
+
+
 DEVICE_LABELS = {
     "auto": "Auto (best available)",
     "cpu": "CPU only",
@@ -311,8 +326,8 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
 
     st.subheader("Foot Traffic Overview")
     interval_labels = {
-        "5T": "5 minutes",
-        "15T": "15 minutes",
+        "5min": "5 minutes",
+        "15min": "15 minutes",
         "1H": "Hourly",
         "1D": "Daily",
     }
@@ -345,7 +360,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["logged_at_local:T", "detections:Q"],
                 )
             )
-            st.altair_chart(traffic_chart, use_container_width=True)
+            _call_with_width(st.altair_chart, traffic_chart)
 
     st.subheader("Detection Heatmap")
     heatmap_bins = st.slider("Heatmap granularity", min_value=5, max_value=30, value=10)
@@ -374,7 +389,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["x_bin:O", "y_bin:O", "count:Q"],
                 )
             )
-            st.altair_chart(heat_chart, use_container_width=True)
+            _call_with_width(st.altair_chart, heat_chart)
 
     st.subheader("Age Distribution")
     age_df = filtered.dropna(subset=["age_estimate"])
@@ -386,7 +401,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
         age_df = age_df.copy()
         age_df["age_bucket"] = pd.cut(age_df["age_estimate"], bins=bins, labels=labels, right=False)
         age_counts = (
-            age_df.groupby("age_bucket")
+            age_df.groupby("age_bucket", observed=False)
             .size()
             .reset_index(name="count")
         )
@@ -403,7 +418,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["age_bucket:N", "count:Q"],
                 )
             )
-            st.altair_chart(age_chart, use_container_width=True)
+            _call_with_width(st.altair_chart, age_chart)
 
     st.subheader("Gender Distribution")
     gender_counts = (
@@ -425,7 +440,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                 tooltip=["gender:N", "count:Q"],
             )
         )
-        st.altair_chart(gender_chart, use_container_width=True)
+        _call_with_width(st.altair_chart, gender_chart)
 
 
 def render_detection_log_preview(
@@ -453,10 +468,10 @@ def render_detection_log_preview(
     logs = logs_df.copy() if logs_df is not None else load_detection_logs().copy()
     if logs.empty:
         if preview_image is not None:
-            st.image(
+            _call_with_width(
+                st.image,
                 cv2.cvtColor(preview_image, cv2.COLOR_BGR2RGB),
                 caption="Most recent annotated frame",
-                use_container_width=True,
             )
         st.info("No detection logs recorded yet. Run an analysis to populate the dataset.")
         return
@@ -479,10 +494,10 @@ def render_detection_log_preview(
     )
 
     if preview_image is not None:
-        st.image(
+        _call_with_width(
+            st.image,
             cv2.cvtColor(preview_image, cv2.COLOR_BGR2RGB),
             caption="Most recent annotated frame",
-            use_container_width=True,
         )
 
     metrics = st.columns(4)
@@ -514,7 +529,7 @@ def render_detection_log_preview(
     preview_df = run_logs[existing_cols].sort_values("logged_at", ascending=False).copy()
     if "logged_at" in preview_df.columns:
         preview_df["logged_at"] = preview_df["logged_at"].dt.tz_localize(None).dt.strftime("%Y-%m-%d %H:%M:%S")
-    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+    _call_with_width(st.dataframe, preview_df, hide_index=True)
 
     download_df = logs.copy()
     download_df["logged_at"] = download_df["logged_at"].dt.tz_localize(None)

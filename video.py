@@ -15,6 +15,16 @@ from data_store import append_detection_logs
 from pipeline import VisionPipeline
 
 
+def _call_with_width(fn: Callable[..., Any], *args: Any, stretch: bool = True, **kwargs: Any):
+    width_value = "stretch" if stretch else "content"
+    try:
+        return fn(*args, width=width_value, **kwargs)
+    except TypeError as exc:
+        if "width" not in str(exc):
+            raise
+        return fn(*args, use_container_width=stretch, **kwargs)
+
+
 def _write_upload_to_temp(uploaded_file: Any) -> Path:
     suffix = Path(uploaded_file.name).suffix or ".mp4"
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
@@ -118,10 +128,10 @@ def run_analysis(
 
             if processed_frames % max(1, preview_stride) == 0 or detections:
                 rgb_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-                frame_placeholder.image(
+                _call_with_width(
+                    frame_placeholder.image,
                     rgb_frame,
                     caption=f"Frame {frame_idx}",
-                    use_container_width=True,
                     channels="RGB",
                 )
 
