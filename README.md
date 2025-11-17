@@ -11,7 +11,7 @@ Optiq Retail Analytics now ships as a Streamlit dashboard that detects shoppers 
    ```
 3. Place the model weights (`age-gender_detector.pt` and `person_detector.pt`) alongside `main.py`.
 
-> PyTorch will automatically use CUDA when available; otherwise, it falls back to CPU execution.
+> PyTorch automatically uses CUDA or Apple Silicon (MPS) when available; otherwise, it falls back to CPU execution. You can also override the device from the sidebar selector (for example, pick **Apple Silicon (MPS)** on macOS to boost FPS).
 
 ## Running the dashboard
 
@@ -46,6 +46,7 @@ After each run the dashboard surfaces:
 - If the page reports missing weights, verify both `.pt` files exist next to `main.py` or provide absolute paths in the sidebar.
 - For RTSP/Webcam sources, ensure the Streamlit process has permission to access the device or network.
 - When processing large files, increase `Frame skip` to reduce load.
+- Use the **Run age/gender detector** and **Run person detector** toggles to keep only the model(s) you need; disabling one frees compute, but keep at least one enabled before running analysis.
 - Uploaded videos are written to a temporary file during the session and deleted once processing completes.
 
 ## License

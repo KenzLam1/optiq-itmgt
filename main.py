@@ -70,10 +70,14 @@ def main() -> None:
                         age_model_path=model_paths["age_model_path"],
                         person_model_path=model_paths["person_model_path"],
                         device_choice=sidebar.device_choice,
+                        enable_age_detector=sidebar.enable_age_detector,
+                        enable_person_detector=sidebar.enable_person_detector,
                         age_conf=sidebar.age_conf,
                         person_conf=sidebar.person_conf,
                         imgsz=sidebar.imgsz,
                     )
+                device_summary = getattr(getattr(pipeline, "age_detector", None), "device", "unknown")
+                st.caption(f"Models are running on: `{device_summary}`")
 
                 pipeline.set_frame_interval(sidebar.frame_skip)
 

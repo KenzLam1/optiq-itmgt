@@ -16,22 +16,28 @@ class VisionPipeline:
         model_path: str,
         person_model_path: str,
         device: Optional[str] = None,
+        enable_age_detector: bool = True,
+        enable_person_detector: bool = True,
         age_conf_threshold: float = 0.4,
         person_conf_threshold: float = 0.35,
         imgsz: int = 640,
     ):
-        self.age_detector = YOLOAgeGenderDetector(
-            model_path,
-            device=device,
-            conf_threshold=age_conf_threshold,
-            imgsz=imgsz,
-        )
-        self.person_detector = YOLOPersonDetector(
-            person_model_path,
-            device=device,
-            conf_threshold=person_conf_threshold,
-            imgsz=imgsz,
-        )
+        self.age_detector: Optional[YOLOAgeGenderDetector] = None
+        if enable_age_detector:
+            self.age_detector = YOLOAgeGenderDetector(
+                model_path,
+                device=device,
+                conf_threshold=age_conf_threshold,
+                imgsz=imgsz,
+            )
+        self.person_detector: Optional[YOLOPersonDetector] = None
+        if enable_person_detector:
+            self.person_detector = YOLOPersonDetector(
+                person_model_path,
+                device=device,
+                conf_threshold=person_conf_threshold,
+                imgsz=imgsz,
+            )
         self.frame_interval = 1
 
     def set_frame_interval(self, interval: int) -> None:
@@ -41,12 +47,21 @@ class VisionPipeline:
         if frame_idx % self.frame_interval != 0:
             return frame, []
 
-        age_detections = self.age_detector.predict(frame)
-        person_detections = self.person_detector.predict(frame)
-        detections = age_detections.copy()
+        if self.age_detector is None and self.person_detector is None:
+            return frame, []
+
+        age_detections: List[DetectionResult] = []
+        if self.age_detector is not None:
+            age_detections = self.age_detector.predict(frame)
+        person_detections: List[DetectionResult] = []
+        if self.person_detector is not None:
+            person_detections = self.person_detector.predict(frame)
+        detections: List[DetectionResult] = []
+        if age_detections:
+            detections.extend(age_detections)
 
         for person_det in person_detections:
-            if any(self._iou(person_det.bbox, age_det.bbox) > 0.35 for age_det in age_detections):
+            if age_detections and any(self._iou(person_det.bbox, age_det.bbox) > 0.35 for age_det in age_detections):
                 continue
             detections.append(person_det)
 
@@ -141,17 +156,22 @@ def load_pipeline(
     age_model_path: str,
     person_model_path: str,
     device_choice: str,
+    enable_age_detector: bool,
+    enable_person_detector: bool,
     age_conf: float,
     person_conf: float,
     imgsz: int,
 ) -> VisionPipeline:
+    if not enable_age_detector and not enable_person_detector:
+        raise RuntimeError("Enable at least one detector to run analysis.")
     device = _resolve_device(device_choice)
     return VisionPipeline(
         model_path=age_model_path,
         person_model_path=person_model_path,
         device=device,
+        enable_age_detector=enable_age_detector,
+        enable_person_detector=enable_person_detector,
         age_conf_threshold=age_conf,
         person_conf_threshold=person_conf,
         imgsz=imgsz,
     )
-

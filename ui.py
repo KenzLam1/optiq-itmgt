@@ -11,10 +11,40 @@ import streamlit as st
 from config import AGE_GENDER_MODEL_PATH, PERSON_DETECTOR_MODEL_PATH
 from data_store import initialize_database, load_detection_logs
 
+try:
+    import torch
+except Exception:  # noqa: BLE001
+    torch = None  # type: ignore[assignment]
+
+
+def _stretch_value(stretch: bool) -> str:
+    return "stretch" if stretch else "content"
+
+
+def _call_with_width(fn: Any, *args: Any, stretch: bool = True, **kwargs: Any) -> Any:
+    """Try the modern width API and gracefully fall back for older Streamlit builds."""
+    width_value = _stretch_value(stretch)
+    try:
+        return fn(*args, width=width_value, **kwargs)
+    except TypeError as exc:
+        if "width" not in str(exc):
+            raise
+        return fn(*args, use_container_width=stretch, **kwargs)
+
+
+DEVICE_LABELS = {
+    "auto": "Auto (best available)",
+    "cpu": "CPU only",
+    "cuda": "NVIDIA CUDA",
+    "mps": "Apple Silicon (MPS)",
+}
+
 
 @dataclass
 class SidebarConfig:
     device_choice: str
+    enable_age_detector: bool
+    enable_person_detector: bool
     age_conf: float
     person_conf: float
     imgsz: int
@@ -50,19 +80,64 @@ def ensure_session_state() -> None:
         st.session_state.db_initialized = True
 
 
+def _available_device_choices() -> tuple[list[str], bool]:
+    """Return supported device options and whether MPS is available."""
+    options: List[str] = ["auto", "cpu"]
+    mps_available = False
+
+    if torch is None:
+        return options, mps_available
+
+    try:
+        if torch.cuda.is_available():
+            options.append("cuda")
+    except Exception:  # noqa: BLE001
+        pass
+
+    try:
+        mps_backend = getattr(torch.backends, "mps", None)
+        if mps_backend is not None and mps_backend.is_available():
+            options.append("mps")
+            mps_available = True
+    except Exception:  # noqa: BLE001
+        pass
+
+    return options, mps_available
+
+
 def render_sidebar() -> SidebarConfig:
     with st.sidebar:
         st.header("Models")
         st.caption("Using default model weight files bundled with the app.")
-        device_choice = st.selectbox("Device", options=["auto", "cpu", "cuda"], index=0)
+        device_options, mps_available = _available_device_choices()
+        device_choice = st.selectbox(
+            "Device",
+            options=device_options,
+            index=0,
+            format_func=lambda opt: DEVICE_LABELS.get(opt, opt.upper()),
+        )
+        if mps_available:
+            st.caption("Apple Silicon detected — pick 'Apple Silicon (MPS)' for higher FPS on Mac.")
+        enable_age_detector = st.toggle(
+            "Run age/gender detector",
+            value=True,
+            help="Disable to skip age/gender predictions (person counts will still run if enabled).",
+        )
+        enable_person_detector = st.toggle(
+            "Run person detector (second model)",
+            value=True,
+            help="Disable to run only the age/gender model for higher FPS on slower machines.",
+        )
+        if not enable_age_detector and not enable_person_detector:
+            st.error("Enable at least one detector to run analysis.")
         age_conf = st.slider("Age/Gender confidence", 0.05, 0.95, 0.40, 0.05)
         person_conf = st.slider("Person confidence", 0.05, 0.95, 0.35, 0.05)
-        imgsz = st.slider("Image size", 320, 960, 640, 32)
+        imgsz = 640
 
         st.header("Capture source")
         source_type = st.selectbox(
             "Source type",
-            options=["Upload video", "Webcam", "Video file (path)", "RTSP / CCTV"],
+            options=["Upload video", "Webcam"],
             index=0,
         )
         uploaded_file = None
@@ -74,14 +149,9 @@ def render_sidebar() -> SidebarConfig:
             uploaded_file = st.file_uploader("Select a video file", type=["mp4", "mov", "mkv", "avi"])
         elif source_type == "Webcam":
             camera_index = st.number_input("Camera index", min_value=0, max_value=10, value=0, step=1)
-        elif source_type == "Video file (path)":
-            file_path = st.text_input("Absolute or relative file path")
-        else:
-            stream_url = st.text_input("RTSP / CCTV URL", value="rtsp://user:pass@host:554/stream")
 
-        st.header("Processing")
-        frame_skip = st.slider("Frame skip", 1, 10, 1)
-        preview_stride = st.slider("Preview interval", 1, 30, 5)
+        frame_skip = 1
+        preview_stride = 1
         run_clicked = st.button("Run analysis", type="primary")
         stop_clicked = st.button("Stop analysis", type="secondary")
         clear_db_requested = st.button("⚠️ Clear detection logs", type="secondary", key="clear_logs_button")
@@ -100,6 +170,8 @@ def render_sidebar() -> SidebarConfig:
 
     return SidebarConfig(
         device_choice=device_choice,
+        enable_age_detector=enable_age_detector,
+        enable_person_detector=enable_person_detector,
         age_conf=age_conf,
         person_conf=person_conf,
         imgsz=imgsz,
@@ -249,8 +321,8 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
 
     st.subheader("Foot Traffic Overview")
     interval_labels = {
-        "5T": "5 minutes",
-        "15T": "15 minutes",
+        "5min": "5 minutes",
+        "15min": "15 minutes",
         "1H": "Hourly",
         "1D": "Daily",
     }
@@ -283,7 +355,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["logged_at_local:T", "detections:Q"],
                 )
             )
-            st.altair_chart(traffic_chart, use_container_width=True)
+            _call_with_width(st.altair_chart, traffic_chart)
 
     st.subheader("Detection Heatmap")
     heatmap_bins = st.slider("Heatmap granularity", min_value=5, max_value=30, value=10)
@@ -312,7 +384,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["x_bin:O", "y_bin:O", "count:Q"],
                 )
             )
-            st.altair_chart(heat_chart, use_container_width=True)
+            _call_with_width(st.altair_chart, heat_chart)
 
     st.subheader("Age Distribution")
     age_df = filtered.dropna(subset=["age_estimate"])
@@ -324,7 +396,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
         age_df = age_df.copy()
         age_df["age_bucket"] = pd.cut(age_df["age_estimate"], bins=bins, labels=labels, right=False)
         age_counts = (
-            age_df.groupby("age_bucket")
+            age_df.groupby("age_bucket", observed=False)
             .size()
             .reset_index(name="count")
         )
@@ -341,7 +413,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["age_bucket:N", "count:Q"],
                 )
             )
-            st.altair_chart(age_chart, use_container_width=True)
+            _call_with_width(st.altair_chart, age_chart)
 
     st.subheader("Gender Distribution")
     gender_counts = (
@@ -363,7 +435,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                 tooltip=["gender:N", "count:Q"],
             )
         )
-        st.altair_chart(gender_chart, use_container_width=True)
+        _call_with_width(st.altair_chart, gender_chart)
 
 
 def render_detection_log_preview(
@@ -391,10 +463,10 @@ def render_detection_log_preview(
     logs = logs_df.copy() if logs_df is not None else load_detection_logs().copy()
     if logs.empty:
         if preview_image is not None:
-            st.image(
+            _call_with_width(
+                st.image,
                 cv2.cvtColor(preview_image, cv2.COLOR_BGR2RGB),
                 caption="Most recent annotated frame",
-                use_container_width=True,
             )
         st.info("No detection logs recorded yet. Run an analysis to populate the dataset.")
         return
@@ -417,10 +489,10 @@ def render_detection_log_preview(
     )
 
     if preview_image is not None:
-        st.image(
+        _call_with_width(
+            st.image,
             cv2.cvtColor(preview_image, cv2.COLOR_BGR2RGB),
             caption="Most recent annotated frame",
-            use_container_width=True,
         )
 
     metrics = st.columns(4)
@@ -452,7 +524,7 @@ def render_detection_log_preview(
     preview_df = run_logs[existing_cols].sort_values("logged_at", ascending=False).copy()
     if "logged_at" in preview_df.columns:
         preview_df["logged_at"] = preview_df["logged_at"].dt.tz_localize(None).dt.strftime("%Y-%m-%d %H:%M:%S")
-    st.dataframe(preview_df, use_container_width=True, hide_index=True)
+    _call_with_width(st.dataframe, preview_df, hide_index=True)
 
     download_df = logs.copy()
     download_df["logged_at"] = download_df["logged_at"].dt.tz_localize(None)
