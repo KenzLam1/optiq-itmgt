@@ -4,6 +4,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import torch
+import supervision as sv
 
 from detections import DetectionResult
 
@@ -29,6 +30,22 @@ def _select_device(explicit_device: Optional[str]) -> str:
         pass
 
     return "cpu"
+
+
+def _clip_sv_detections(
+    detections: sv.Detections, frame_height: int, frame_width: int
+) -> sv.Detections:
+    """Clamp detection boxes to the frame bounds for older supervision builds."""
+    if len(detections) == 0:
+        return detections
+
+    clipped = detections.xyxy.copy()
+    clipped[:, 0] = np.clip(clipped[:, 0], 0, frame_width - 1)
+    clipped[:, 2] = np.clip(clipped[:, 2], 0, frame_width - 1)
+    clipped[:, 1] = np.clip(clipped[:, 1], 0, frame_height - 1)
+    clipped[:, 3] = np.clip(clipped[:, 3], 0, frame_height - 1)
+    detections.xyxy = clipped
+    return detections
 
 
 class YOLOAgeGenderDetector:
@@ -114,45 +131,64 @@ class YOLOAgeGenderDetector:
         if not results:
             return detections
 
+        frame_height, frame_width = frame.shape[:2]
         result = results[0]
-        boxes = getattr(result, "boxes", None)
-        if boxes is None:
+        sv_detections = sv.Detections.from_ultralytics(result)
+        if len(sv_detections) == 0:
             return detections
 
-        frame_height, frame_width = frame.shape[:2]
+        sv_detections = _clip_sv_detections(
+            sv_detections, frame_height=frame_height, frame_width=frame_width
+        )
+        class_ids = (
+            sv_detections.class_id.astype(int).tolist()
+            if sv_detections.class_id is not None
+            else [None] * len(sv_detections)
+        )
 
-        for box in boxes:
-            xyxy = box.xyxy[0].tolist()
-            x1, y1, x2, y2 = map(int, xyxy)
-            x1 = max(0, min(frame_width - 1, x1))
-            y1 = max(0, min(frame_height - 1, y1))
-            x2 = max(0, min(frame_width - 1, x2))
-            y2 = max(0, min(frame_height - 1, y2))
+        age_ranges: List[Optional[str]] = []
+        genders: List[Optional[str]] = []
+        age_estimates: List[Optional[float]] = []
+        class_labels: List[Optional[str]] = []
 
+        for xyxy, conf, cls_id in zip(
+            sv_detections.xyxy, sv_detections.confidence, class_ids
+        ):
+            x1, y1, x2, y2 = map(int, xyxy.tolist())
             w = max(1, x2 - x1)
             h = max(1, y2 - y1)
-            conf = float(box.conf[0]) if box.conf is not None else 0.0
-            cls_id = int(box.cls[0]) if box.cls is not None else -1
+            score = float(conf) if conf is not None else 0.0
 
             if isinstance(self.names, dict):
                 raw_label = self.names.get(cls_id)
             else:
-                raw_label = self.names[cls_id] if 0 <= cls_id < len(self.names) else None
+                raw_label = self.names[cls_id] if cls_id is not None and 0 <= cls_id < len(self.names) else None
 
             age_range, gender = self._parse_label(raw_label)
             age_estimate = self._estimate_age(age_range)
+            capitalized_gender = gender.capitalize() if gender else None
+
+            age_ranges.append(age_range)
+            genders.append(capitalized_gender)
+            age_estimates.append(age_estimate)
+            class_labels.append(raw_label)
 
             detections.append(
                 DetectionResult(
                     bbox=(x1, y1, w, h),
-                    confidence=conf,
+                    confidence=score,
                     age_range=age_range,
                     age_estimate=age_estimate,
-                    gender_label=gender.capitalize() if gender else None,
+                    gender_label=capitalized_gender,
                     class_label=raw_label,
                     source="age_gender",
                 )
             )
+
+        sv_detections.data["age_range"] = age_ranges
+        sv_detections.data["gender_label"] = genders
+        sv_detections.data["age_estimate"] = age_estimates
+        sv_detections.data["class_label"] = class_labels
 
         return detections
 
@@ -219,33 +255,41 @@ class YOLOPersonDetector:
         if not results:
             return detections
 
+        frame_height, frame_width = frame.shape[:2]
         result = results[0]
-        boxes = getattr(result, "boxes", None)
-        if boxes is None:
+        sv_detections = sv.Detections.from_ultralytics(result)
+        if len(sv_detections) == 0:
             return detections
 
-        frame_height, frame_width = frame.shape[:2]
+        sv_detections = _clip_sv_detections(
+            sv_detections, frame_height=frame_height, frame_width=frame_width
+        )
+        if sv_detections.class_id is not None:
+            mask = np.isin(sv_detections.class_id.astype(int), self.person_class_ids)
+            sv_detections = sv_detections[mask]
+        if len(sv_detections) == 0:
+            return detections
 
-        for box in boxes:
-            cls_id = int(box.cls[0]) if box.cls is not None else -1
-            if cls_id not in self.person_class_ids:
-                continue
+        class_ids = (
+            sv_detections.class_id.astype(int).tolist()
+            if sv_detections.class_id is not None
+            else [None] * len(sv_detections)
+        )
 
-            xyxy = box.xyxy[0].tolist()
-            x1, y1, x2, y2 = map(int, xyxy)
-            x1 = max(0, min(frame_width - 1, x1))
-            y1 = max(0, min(frame_height - 1, y1))
-            x2 = max(0, min(frame_width - 1, x2))
-            y2 = max(0, min(frame_height - 1, y2))
-
+        for xyxy, conf, cls_id in zip(
+            sv_detections.xyxy, sv_detections.confidence, class_ids
+        ):
+            x1, y1, x2, y2 = map(int, xyxy.tolist())
             w = max(1, x2 - x1)
             h = max(1, y2 - y1)
-            conf = float(box.conf[0]) if box.conf is not None else 0.0
+            score = float(conf) if conf is not None else 0.0
 
             if isinstance(self.names, dict):
                 raw_label = self.names.get(cls_id, "Person")
             else:
-                raw_label = self.names[cls_id] if 0 <= cls_id < len(self.names) else "Person"
+                raw_label = (
+                    self.names[cls_id] if cls_id is not None and 0 <= cls_id < len(self.names) else "Person"
+                )
 
             label_text = raw_label or "Person"
             if isinstance(label_text, str) and label_text.islower():
@@ -254,7 +298,7 @@ class YOLOPersonDetector:
             detections.append(
                 DetectionResult(
                     bbox=(x1, y1, w, h),
-                    confidence=conf,
+                    confidence=score,
                     age_range=None,
                     age_estimate=None,
                     gender_label=None,
