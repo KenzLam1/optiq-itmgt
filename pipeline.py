@@ -3,6 +3,7 @@ from typing import List, Optional, Tuple
 import cv2
 import numpy as np
 import streamlit as st
+import supervision as sv
 
 from detections import DetectionResult
 from models import YOLOAgeGenderDetector, YOLOPersonDetector
@@ -39,6 +40,8 @@ class VisionPipeline:
                 imgsz=imgsz,
             )
         self.frame_interval = 1
+        self._box_annotator = sv.BoxAnnotator(color_lookup=sv.ColorLookup.INDEX)
+        self._label_annotator = sv.LabelAnnotator(color_lookup=sv.ColorLookup.INDEX)
 
     def set_frame_interval(self, interval: int) -> None:
         self.frame_interval = max(1, interval)
@@ -60,86 +63,108 @@ class VisionPipeline:
         if age_detections:
             detections.extend(age_detections)
 
-        for person_det in person_detections:
-            if age_detections and any(self._iou(person_det.bbox, age_det.bbox) > 0.35 for age_det in age_detections):
-                continue
-            detections.append(person_det)
+        filtered_person_detections = self._filter_overlap(
+            person_detections, age_detections, iou_threshold=0.35
+        )
+        detections.extend(filtered_person_detections)
 
         annotated = frame.copy()
-
-        for det in detections:
-            x, y, w, h = det.bbox
-            cv2.rectangle(annotated, (x, y), (x + w, y + h), (20, 170, 255), 2)
-
-            label_lines: List[str] = []
-            if det.gender_label and det.age_range:
-                label_lines.append(f"{det.gender_label} ({det.age_range})")
-            elif det.class_label:
-                label = det.class_label
-                if isinstance(label, str) and label.islower():
-                    label = label.title()
-                label_lines.append(label)
-            else:
-                label_lines.append("Person")
-
-            label_lines.append(f"{det.confidence * 100:0.0f}%")
-
-            self._draw_label_block(annotated, x, y, label_lines)
+        if detections:
+            sv_detections = self._results_to_sv_detections(detections)
+            labels = [self._format_label(det) for det in detections]
+            annotated = self._box_annotator.annotate(
+                scene=annotated, detections=sv_detections
+            )
+            annotated = self._label_annotator.annotate(
+                scene=annotated, detections=sv_detections, labels=labels
+            )
 
         return annotated, detections
 
+    def _filter_overlap(
+        self,
+        person_detections: List[DetectionResult],
+        age_detections: List[DetectionResult],
+        iou_threshold: float,
+    ) -> List[DetectionResult]:
+        if not person_detections:
+            return []
+        if not age_detections:
+            return person_detections
+
+        person_boxes = self._results_to_sv_detections(person_detections).xyxy
+        age_boxes = self._results_to_sv_detections(age_detections).xyxy
+        iou_matrix = self._pairwise_iou(person_boxes, age_boxes)
+        suppress_mask = (iou_matrix.max(axis=1) <= iou_threshold) if iou_matrix.size else np.ones(len(person_detections), dtype=bool)
+
+        return [
+            det for det, keep in zip(person_detections, suppress_mask) if keep
+        ]
+
     @staticmethod
-    def _iou(box_a: Tuple[int, int, int, int], box_b: Tuple[int, int, int, int]) -> float:
-        ax1, ay1, aw, ah = box_a
-        bx1, by1, bw, bh = box_b
-        ax2, ay2 = ax1 + aw, ay1 + ah
-        bx2, by2 = bx1 + bw, by1 + bh
+    def _pairwise_iou(
+        boxes_a: np.ndarray,
+        boxes_b: np.ndarray,
+    ) -> np.ndarray:
+        if boxes_a.size == 0 or boxes_b.size == 0:
+            return np.zeros((boxes_a.shape[0], boxes_b.shape[0]), dtype=np.float32)
 
-        inter_x1 = max(ax1, bx1)
-        inter_y1 = max(ay1, by1)
-        inter_x2 = min(ax2, bx2)
-        inter_y2 = min(ay2, by2)
+        ax1, ay1, ax2, ay2 = boxes_a[:, 0][:, None], boxes_a[:, 1][:, None], boxes_a[:, 2][:, None], boxes_a[:, 3][:, None]
+        bx1, by1, bx2, by2 = boxes_b[:, 0][None, :], boxes_b[:, 1][None, :], boxes_b[:, 2][None, :], boxes_b[:, 3][None, :]
 
-        inter_w = max(0, inter_x2 - inter_x1)
-        inter_h = max(0, inter_y2 - inter_y1)
+        inter_x1 = np.maximum(ax1, bx1)
+        inter_y1 = np.maximum(ay1, by1)
+        inter_x2 = np.minimum(ax2, bx2)
+        inter_y2 = np.minimum(ay2, by2)
+
+        inter_w = np.maximum(0.0, inter_x2 - inter_x1)
+        inter_h = np.maximum(0.0, inter_y2 - inter_y1)
         inter_area = inter_w * inter_h
 
-        area_a = aw * ah
-        area_b = bw * bh
+        area_a = np.maximum(0.0, (boxes_a[:, 2] - boxes_a[:, 0]) * (boxes_a[:, 3] - boxes_a[:, 1]))[:, None]
+        area_b = np.maximum(0.0, (boxes_b[:, 2] - boxes_b[:, 0]) * (boxes_b[:, 3] - boxes_b[:, 1]))[None, :]
 
         union = area_a + area_b - inter_area + 1e-9
         return inter_area / union
 
     @staticmethod
-    def _draw_label_block(image: np.ndarray, x: int, y: int, lines: List[str]) -> None:
-        """Render a semi-transparent label block above the bounding box."""
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        font_scale = 0.55
-        font_thickness = 1
-        margin = 4
-        line_height = 18
+    def _results_to_sv_detections(results: List[DetectionResult]) -> sv.Detections:
+        if not results:
+            return sv.Detections(
+                xyxy=np.empty((0, 4), dtype=np.float32),
+                confidence=np.empty((0,), dtype=np.float32),
+            )
 
-        block_width = 0
-        for line in lines:
-            size, _ = cv2.getTextSize(line, font, font_scale, font_thickness)
-            block_width = max(block_width, size[0])
+        xyxy: List[List[float]] = []
+        confidences: List[float] = []
+        for det in results:
+            x, y, w, h = det.bbox
+            xyxy.append([x, y, x + w, y + h])
+            confidences.append(det.confidence)
 
-        block_height = line_height * len(lines) + margin * 2
-
-        overlay = image.copy()
-        top = max(0, y - block_height - 4)
-        cv2.rectangle(
-            overlay,
-            (x, top),
-            (x + block_width + margin * 2, top + block_height),
-            (15, 20, 30),
-            -1,
+        return sv.Detections(
+            xyxy=np.array(xyxy, dtype=np.float32),
+            confidence=np.array(confidences, dtype=np.float32),
         )
-        cv2.addWeighted(overlay, 0.65, image, 0.35, 0, dst=image)
 
-        for idx, line in enumerate(lines):
-            baseline = top + margin + (idx + 1) * line_height - 6
-            cv2.putText(image, line, (x + margin, baseline), font, font_scale, (255, 255, 255), font_thickness, cv2.LINE_AA)
+    @staticmethod
+    def _format_label(detection: DetectionResult) -> str:
+        primary_label: Optional[str] = None
+        if detection.gender_label and detection.age_range:
+            primary_label = f"{detection.gender_label} ({detection.age_range})"
+        elif detection.class_label:
+            label = detection.class_label
+            if isinstance(label, str):
+                primary_label = label.title()
+        else:
+            primary_label = "Person"
+
+        if primary_label is None:
+            primary_label = "Person"
+
+        confidence_pct = f"{detection.confidence * 100:0.0f}%"
+        return f"{primary_label} {confidence_pct}".strip()
+
 
 
 def _resolve_device(choice: str) -> Optional[str]:
