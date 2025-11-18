@@ -10,26 +10,8 @@ import streamlit as st
 
 from config import AGE_GENDER_MODEL_PATH, PERSON_DETECTOR_MODEL_PATH
 from data_store import initialize_database, load_detection_logs
-
-try:
-    import torch
-except Exception:  # noqa: BLE001
-    torch = None  # type: ignore[assignment]
-
-
-def _stretch_value(stretch: bool) -> str:
-    return "stretch" if stretch else "content"
-
-
-def _call_with_width(fn: Any, *args: Any, stretch: bool = True, **kwargs: Any) -> Any:
-    """Try the modern width API and gracefully fall back for older Streamlit builds."""
-    width_value = _stretch_value(stretch)
-    try:
-        return fn(*args, width=width_value, **kwargs)
-    except TypeError as exc:
-        if "width" not in str(exc):
-            raise
-        return fn(*args, use_container_width=stretch, **kwargs)
+from hardware import available_device_choices
+from streamlit_compat import call_with_width
 
 
 DEVICE_LABELS = {
@@ -80,36 +62,11 @@ def ensure_session_state() -> None:
         st.session_state.db_initialized = True
 
 
-def _available_device_choices() -> tuple[list[str], bool]:
-    """Return supported device options and whether MPS is available."""
-    options: List[str] = ["auto", "cpu"]
-    mps_available = False
-
-    if torch is None:
-        return options, mps_available
-
-    try:
-        if torch.cuda.is_available():
-            options.append("cuda")
-    except Exception:  # noqa: BLE001
-        pass
-
-    try:
-        mps_backend = getattr(torch.backends, "mps", None)
-        if mps_backend is not None and mps_backend.is_available():
-            options.append("mps")
-            mps_available = True
-    except Exception:  # noqa: BLE001
-        pass
-
-    return options, mps_available
-
-
 def render_sidebar() -> SidebarConfig:
     with st.sidebar:
         st.header("Models")
         st.caption("Using default model weight files bundled with the app.")
-        device_options, mps_available = _available_device_choices()
+        device_options, mps_available = available_device_choices()
         device_choice = st.selectbox(
             "Device",
             options=device_options,
@@ -355,7 +312,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["logged_at_local:T", "detections:Q"],
                 )
             )
-            _call_with_width(st.altair_chart, traffic_chart)
+            call_with_width(st.altair_chart, traffic_chart)
 
     st.subheader("Detection Heatmap")
     heatmap_bins = st.slider("Heatmap granularity", min_value=5, max_value=30, value=10)
@@ -384,7 +341,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["x_bin:O", "y_bin:O", "count:Q"],
                 )
             )
-            _call_with_width(st.altair_chart, heat_chart)
+            call_with_width(st.altair_chart, heat_chart)
 
     st.subheader("Age Distribution")
     age_df = filtered.dropna(subset=["age_estimate"])
@@ -413,7 +370,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["age_bucket:N", "count:Q"],
                 )
             )
-            _call_with_width(st.altair_chart, age_chart)
+            call_with_width(st.altair_chart, age_chart)
 
     st.subheader("Gender Distribution")
     gender_counts = (
@@ -435,7 +392,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                 tooltip=["gender:N", "count:Q"],
             )
         )
-        _call_with_width(st.altair_chart, gender_chart)
+        call_with_width(st.altair_chart, gender_chart)
 
 
 def render_detection_log_preview(
@@ -463,7 +420,7 @@ def render_detection_log_preview(
     logs = logs_df.copy() if logs_df is not None else load_detection_logs().copy()
     if logs.empty:
         if preview_image is not None:
-            _call_with_width(
+            call_with_width(
                 st.image,
                 cv2.cvtColor(preview_image, cv2.COLOR_BGR2RGB),
                 caption="Most recent annotated frame",
@@ -489,7 +446,7 @@ def render_detection_log_preview(
     )
 
     if preview_image is not None:
-        _call_with_width(
+        call_with_width(
             st.image,
             cv2.cvtColor(preview_image, cv2.COLOR_BGR2RGB),
             caption="Most recent annotated frame",
@@ -524,7 +481,7 @@ def render_detection_log_preview(
     preview_df = run_logs[existing_cols].sort_values("logged_at", ascending=False).copy()
     if "logged_at" in preview_df.columns:
         preview_df["logged_at"] = preview_df["logged_at"].dt.tz_localize(None).dt.strftime("%Y-%m-%d %H:%M:%S")
-    _call_with_width(st.dataframe, preview_df, hide_index=True)
+    call_with_width(st.dataframe, preview_df, hide_index=True)
 
     download_df = logs.copy()
     download_df["logged_at"] = download_df["logged_at"].dt.tz_localize(None)

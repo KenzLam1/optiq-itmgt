@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from typing import Any, Dict, Iterable, Sequence
+from typing import Any, Dict, Iterable, Sequence, Union
 
 import pandas as pd
+
+from detections import DetectionLogEntry
 
 DATA_DIR = Path("data")
 DB_PATH = DATA_DIR / "detections.db"
@@ -84,10 +86,11 @@ def initialize_database() -> None:
     _bootstrap_from_legacy_csv_if_needed()
 
 
-def _normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_row(row: Union[DetectionLogEntry, Dict[str, Any]]) -> Dict[str, Any]:
+    payload = row.to_row() if isinstance(row, DetectionLogEntry) else row
     normalized: Dict[str, Any] = {}
     for column in TABLE_COLUMNS:
-        value = row.get(column)
+        value = payload.get(column)
         if column == "logged_at" and value is not None:
             if hasattr(value, "isoformat"):
                 value = value.isoformat()
@@ -95,7 +98,7 @@ def _normalize_row(row: Dict[str, Any]) -> Dict[str, Any]:
     return normalized
 
 
-def append_detection_logs(entries: Iterable[Dict[str, Any]]) -> None:
+def append_detection_logs(entries: Iterable[Union[DetectionLogEntry, Dict[str, Any]]]) -> None:
     rows = [_normalize_row(entry) for entry in entries]
     if not rows:
         return

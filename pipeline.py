@@ -6,6 +6,7 @@ import streamlit as st
 import supervision as sv
 
 from detections import DetectionResult
+from hardware import resolve_user_device_choice
 from models import YOLOAgeGenderDetector, YOLOPersonDetector
 
 
@@ -166,16 +167,6 @@ class VisionPipeline:
         return f"{primary_label} {confidence_pct}".strip()
 
 
-
-def _resolve_device(choice: str) -> Optional[str]:
-    choice = choice.lower()
-    if choice == "auto":
-        return None
-    if choice == "cuda":
-        return "cuda:0"
-    return choice
-
-
 @st.cache_resource(show_spinner=False)
 def load_pipeline(
     age_model_path: str,
@@ -189,7 +180,7 @@ def load_pipeline(
 ) -> VisionPipeline:
     if not enable_age_detector and not enable_person_detector:
         raise RuntimeError("Enable at least one detector to run analysis.")
-    device = _resolve_device(device_choice)
+    device = resolve_user_device_choice(device_choice)
     return VisionPipeline(
         model_path=age_model_path,
         person_model_path=person_model_path,

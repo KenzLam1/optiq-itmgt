@@ -1,35 +1,15 @@
 import logging
+from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Iterable, List, Optional, Tuple
 
 import numpy as np
-import torch
 import supervision as sv
 
 from detections import DetectionResult
+from hardware import select_runtime_device
 
 logger = logging.getLogger(__name__)
-
-
-def _select_device(explicit_device: Optional[str]) -> str:
-    """Resolve the best runtime device, falling back gracefully."""
-    if explicit_device:
-        return explicit_device
-
-    try:
-        if torch.cuda.is_available():
-            return "cuda:0"
-    except Exception:  # noqa: BLE001
-        pass
-
-    try:
-        mps_backend = getattr(torch.backends, "mps", None)
-        if mps_backend is not None and mps_backend.is_available():
-            return "mps"
-    except Exception:  # noqa: BLE001
-        pass
-
-    return "cpu"
 
 
 def _clip_sv_detections(
@@ -48,7 +28,88 @@ def _clip_sv_detections(
     return detections
 
 
-class YOLOAgeGenderDetector:
+class BaseYOLODetector(ABC):
+    """Shared runtime for Ultralytics detectors used in the dashboard."""
+
+    def __init__(
+        self,
+        model_path: str,
+        device: Optional[str],
+        conf_threshold: float,
+        imgsz: int,
+    ) -> None:
+        self.model_path = Path(model_path)
+        self.device = select_runtime_device(device)
+        self.conf_threshold = conf_threshold
+        self.imgsz = imgsz
+        self.model = self._load_model()
+        self.names = getattr(self.model.model, "names", getattr(self.model, "names", {}))
+
+    def _load_model(self):
+        try:
+            from ultralytics import YOLO
+        except ImportError as exc:  # noqa: BLE001
+            raise RuntimeError(
+                "Ultralytics is not installed. Install dependencies with 'pip install -r requirements.txt'."
+            ) from exc
+
+        if not self.model_path.exists():
+            raise RuntimeError(self._missing_weights_message())
+
+        model = YOLO(str(self.model_path))
+        try:
+            model.to(self.device)
+        except AttributeError:
+            model.model.to(self.device)
+
+        logger.info("%s initialised on device '%s'", self.__class__.__name__, self.device)
+        return model
+
+    def predict(self, frame: np.ndarray) -> List[DetectionResult]:
+        results = self.model.predict(
+            source=frame,
+            imgsz=self.imgsz,
+            conf=self.conf_threshold,
+            device=self.device,
+            verbose=False,
+        )
+        if not results:
+            return []
+
+        frame_height, frame_width = frame.shape[:2]
+        result = results[0]
+        sv_detections = sv.Detections.from_ultralytics(result)
+        if len(sv_detections) == 0:
+            return []
+
+        sv_detections = _clip_sv_detections(
+            sv_detections, frame_height=frame_height, frame_width=frame_width
+        )
+        return self._build_detections(sv_detections, frame_height, frame_width)
+
+    def _iterate_raw_detections(
+        self, sv_detections: sv.Detections
+    ) -> Iterable[Tuple[np.ndarray, float, Optional[int]]]:
+        class_ids = (
+            sv_detections.class_id.astype(int).tolist()
+            if sv_detections.class_id is not None
+            else [None] * len(sv_detections)
+        )
+        for xyxy, conf, cls_id in zip(sv_detections.xyxy, sv_detections.confidence, class_ids):
+            yield xyxy, float(conf) if conf is not None else 0.0, cls_id
+
+    @abstractmethod
+    def _missing_weights_message(self) -> str:
+        """Return a user-friendly error if weights are missing."""
+
+    @abstractmethod
+    def _build_detections(
+        self, sv_detections: sv.Detections, frame_height: int, frame_width: int
+    ) -> List[DetectionResult]:
+        """Convert supervision detections to dashboard DetectionResult objects."""
+
+
+class YOLOAgeGenderDetector(BaseYOLODetector):
     """Ultralytics YOLO model that predicts age/gender-specific detections."""
 
     def __init__(
@@ -58,31 +119,13 @@ class YOLOAgeGenderDetector:
         conf_threshold: float = 0.4,
         imgsz: int = 640,
     ):
-        try:
-            from ultralytics import YOLO
-        except ImportError as exc:  # noqa: BLE001
-            raise RuntimeError(
-                "Ultralytics is not installed. Install dependencies with 'pip install -r requirements.txt'."
-            ) from exc
+        super().__init__(model_path, device, conf_threshold, imgsz)
 
-        if not Path(model_path).exists():
-            raise RuntimeError(
-                f"Age/gender detector weights not found at '{model_path}'. "
-                "Place the model file alongside main.py or provide an absolute path."
-            )
-
-        self.device = _select_device(device)
-        self.model = YOLO(model_path)
-
-        try:
-            self.model.to(self.device)
-        except AttributeError:
-            self.model.model.to(self.device)
-
-        logger.info("Age/Gender detector initialised on device '%s'", self.device)
-        self.names = getattr(self.model.model, "names", getattr(self.model, "names", {}))
-        self.conf_threshold = conf_threshold
-        self.imgsz = imgsz
+    def _missing_weights_message(self) -> str:
+        return (
+            f"Age/gender detector weights not found at '{self.model_path}'. "
+            "Place the model file alongside main.py or provide an absolute path."
+        )
 
     @staticmethod
     def _parse_label(label: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
@@ -118,46 +161,19 @@ class YOLOAgeGenderDetector:
 
         return None
 
-    def predict(self, frame: np.ndarray) -> List[DetectionResult]:
-        results = self.model.predict(
-            source=frame,
-            imgsz=self.imgsz,
-            conf=self.conf_threshold,
-            device=self.device,
-            verbose=False,
-        )
-
+    def _build_detections(
+        self, sv_detections: sv.Detections, frame_height: int, frame_width: int
+    ) -> List[DetectionResult]:
         detections: List[DetectionResult] = []
-        if not results:
-            return detections
-
-        frame_height, frame_width = frame.shape[:2]
-        result = results[0]
-        sv_detections = sv.Detections.from_ultralytics(result)
-        if len(sv_detections) == 0:
-            return detections
-
-        sv_detections = _clip_sv_detections(
-            sv_detections, frame_height=frame_height, frame_width=frame_width
-        )
-        class_ids = (
-            sv_detections.class_id.astype(int).tolist()
-            if sv_detections.class_id is not None
-            else [None] * len(sv_detections)
-        )
-
         age_ranges: List[Optional[str]] = []
         genders: List[Optional[str]] = []
         age_estimates: List[Optional[float]] = []
         class_labels: List[Optional[str]] = []
 
-        for xyxy, conf, cls_id in zip(
-            sv_detections.xyxy, sv_detections.confidence, class_ids
-        ):
+        for xyxy, score, cls_id in self._iterate_raw_detections(sv_detections):
             x1, y1, x2, y2 = map(int, xyxy.tolist())
             w = max(1, x2 - x1)
             h = max(1, y2 - y1)
-            score = float(conf) if conf is not None else 0.0
 
             if isinstance(self.names, dict):
                 raw_label = self.names.get(cls_id)
@@ -189,11 +205,10 @@ class YOLOAgeGenderDetector:
         sv_detections.data["gender_label"] = genders
         sv_detections.data["age_estimate"] = age_estimates
         sv_detections.data["class_label"] = class_labels
-
         return detections
 
 
-class YOLOPersonDetector:
+class YOLOPersonDetector(BaseYOLODetector):
     """Separate YOLO model that focuses on generic person detections."""
 
     def __init__(
@@ -203,32 +218,14 @@ class YOLOPersonDetector:
         conf_threshold: float = 0.35,
         imgsz: int = 640,
     ):
-        try:
-            from ultralytics import YOLO
-        except ImportError as exc:  # noqa: BLE001
-            raise RuntimeError(
-                "Ultralytics is not installed. Install dependencies with 'pip install -r requirements.txt'."
-            ) from exc
-
-        if not Path(model_path).exists():
-            raise RuntimeError(
-                f"Person detector weights not found at '{model_path}'. "
-                "Download a YOLO model (for example yolov8n.pt) and provide its path."
-            )
-
-        self.device = _select_device(device)
-        self.model = YOLO(model_path)
-
-        try:
-            self.model.to(self.device)
-        except AttributeError:
-            self.model.model.to(self.device)
-
-        logger.info("Person detector initialised on device '%s'", self.device)
-        self.names = getattr(self.model.model, "names", getattr(self.model, "names", {}))
+        super().__init__(model_path, device, conf_threshold, imgsz)
         self.person_class_ids = self._resolve_person_class_ids()
-        self.conf_threshold = conf_threshold
-        self.imgsz = imgsz
+
+    def _missing_weights_message(self) -> str:
+        return (
+            f"Person detector weights not found at '{self.model_path}'. "
+            "Download a YOLO model (for example yolov8n.pt) and provide its path."
+        )
 
     def _resolve_person_class_ids(self) -> List[int]:
         ids: List[int] = []
@@ -242,47 +239,20 @@ class YOLOPersonDetector:
                     ids.append(idx)
         return ids or [0]
 
-    def predict(self, frame: np.ndarray) -> List[DetectionResult]:
-        results = self.model.predict(
-            source=frame,
-            imgsz=self.imgsz,
-            conf=self.conf_threshold,
-            device=self.device,
-            verbose=False,
-        )
-
-        detections: List[DetectionResult] = []
-        if not results:
-            return detections
-
-        frame_height, frame_width = frame.shape[:2]
-        result = results[0]
-        sv_detections = sv.Detections.from_ultralytics(result)
-        if len(sv_detections) == 0:
-            return detections
-
-        sv_detections = _clip_sv_detections(
-            sv_detections, frame_height=frame_height, frame_width=frame_width
-        )
+    def _build_detections(
+        self, sv_detections: sv.Detections, frame_height: int, frame_width: int
+    ) -> List[DetectionResult]:
         if sv_detections.class_id is not None:
             mask = np.isin(sv_detections.class_id.astype(int), self.person_class_ids)
             sv_detections = sv_detections[mask]
         if len(sv_detections) == 0:
-            return detections
+            return []
 
-        class_ids = (
-            sv_detections.class_id.astype(int).tolist()
-            if sv_detections.class_id is not None
-            else [None] * len(sv_detections)
-        )
-
-        for xyxy, conf, cls_id in zip(
-            sv_detections.xyxy, sv_detections.confidence, class_ids
-        ):
+        detections: List[DetectionResult] = []
+        for xyxy, score, cls_id in self._iterate_raw_detections(sv_detections):
             x1, y1, x2, y2 = map(int, xyxy.tolist())
             w = max(1, x2 - x1)
             h = max(1, y2 - y1)
-            score = float(conf) if conf is not None else 0.0
 
             if isinstance(self.names, dict):
                 raw_label = self.names.get(cls_id, "Person")

@@ -1,28 +1,140 @@
 import tempfile
 import time
+from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
+
 try:
     from zoneinfo import ZoneInfo
 except ImportError:  # Python <3.9 fallback using backports.zoneinfo
     ZoneInfo = None  # type: ignore[assignment]
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 import cv2
 import numpy as np
 
 from data_store import append_detection_logs
+from detections import DetectionLogEntry, DetectionSnapshot
 from pipeline import VisionPipeline
+from streamlit_compat import call_with_width
 
 
-def _call_with_width(fn: Callable[..., Any], *args: Any, stretch: bool = True, **kwargs: Any):
-    width_value = "stretch" if stretch else "content"
-    try:
-        return fn(*args, width=width_value, **kwargs)
-    except TypeError as exc:
-        if "width" not in str(exc):
-            raise
-        return fn(*args, use_container_width=stretch, **kwargs)
+@dataclass
+class TrackState:
+    center_x: float
+    center_y: float
+    logged_at: datetime
+
+
+class DetectionDeduper:
+    """Lightweight duplicate suppression using temporal/spatial proximity."""
+
+    def __init__(self, ttl_seconds: float = 6.0, duplicate_distance: float = 0.06) -> None:
+        self.ttl_seconds = ttl_seconds
+        self.duplicate_distance = duplicate_distance
+        self._tracks: List[TrackState] = []
+
+    def should_log(self, timestamp: datetime, normalized_center: Tuple[float, float]) -> bool:
+        self._prune(timestamp)
+        for track in self._tracks:
+            dx = normalized_center[0] - track.center_x
+            dy = normalized_center[1] - track.center_y
+            dist = float(np.hypot(dx, dy))
+            if dist <= self.duplicate_distance:
+                track.center_x = normalized_center[0]
+                track.center_y = normalized_center[1]
+                track.logged_at = timestamp
+                return False
+        self._tracks.append(
+            TrackState(
+                center_x=normalized_center[0],
+                center_y=normalized_center[1],
+                logged_at=timestamp,
+            )
+        )
+        return True
+
+    def _prune(self, timestamp: datetime) -> None:
+        self._tracks = [
+            track
+            for track in self._tracks
+            if (timestamp - track.logged_at).total_seconds() <= self.ttl_seconds
+        ]
+
+
+class DetectionLogBuffer:
+    """Buffer detection logs before writing to SQLite to reduce I/O."""
+
+    def __init__(self, flush_threshold: int = 50) -> None:
+        self.flush_threshold = flush_threshold
+        self._entries: List[DetectionLogEntry] = []
+
+    def add(self, entry: DetectionLogEntry) -> None:
+        self._entries.append(entry)
+        if len(self._entries) >= self.flush_threshold:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self._entries:
+            return
+        append_detection_logs(self._entries)
+        self._entries.clear()
+
+    def close(self) -> None:
+        self.flush()
+
+
+class AnalysisUI:
+    """Encapsulate Streamlit preview/progress updates."""
+
+    def __init__(self, progress_bar, frame_placeholder, status_placeholder, preview_stride: int) -> None:
+        self.progress_bar = progress_bar
+        self.frame_placeholder = frame_placeholder
+        self.status_placeholder = status_placeholder
+        self.preview_stride = max(1, preview_stride)
+
+    def show_frame(
+        self,
+        annotated: np.ndarray,
+        frame_idx: int,
+        processed_frames: int,
+        force: bool = False,
+    ) -> None:
+        if not force and processed_frames % self.preview_stride != 0:
+            return
+        rgb_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
+        call_with_width(
+            self.frame_placeholder.image,
+            rgb_frame,
+            caption=f"Frame {frame_idx}",
+            channels="RGB",
+        )
+
+    def update_progress(self, frame_idx: int, total_frames: Optional[int], processed_frames: int) -> None:
+        if total_frames:
+            progress_ratio = min(1.0, frame_idx / max(1, total_frames))
+            progress_value = int(progress_ratio * 100)
+            self.progress_bar.progress(progress_value, text=f"Processed {processed_frames} frame(s)")
+        else:
+            self.progress_bar.progress(0, text=f"Processed {processed_frames} frame(s)")
+
+    def update_status(self, processed_frames: int) -> None:
+        if processed_frames % self.preview_stride == 0:
+            self.status_placeholder.info(f"Frames processed: {processed_frames}")
+
+    def finish(self, *, processed_frames: int, fps: float, elapsed: float, stopped: bool) -> None:
+        if stopped:
+            self.progress_bar.progress(0, text="Analysis stopped")
+            self.status_placeholder.warning(
+                f"Analysis stopped by user after {processed_frames} frame(s)."
+            )
+        else:
+            self.progress_bar.progress(100, text="Analysis complete")
+            self.status_placeholder.success(f"Completed in {elapsed:.1f}s ({fps:.2f} FPS)")
+
+    def stop_without_frames(self) -> None:
+        self.progress_bar.progress(0, text="Analysis stopped")
+        self.status_placeholder.info("Analysis stopped before any frames were processed.")
 
 
 def _write_upload_to_temp(uploaded_file: Any) -> Path:
@@ -61,6 +173,22 @@ def prepare_video_source(
     return str(temp_path), temp_path
 
 
+def _current_manila_time(now_utc: datetime) -> datetime:
+    if ZoneInfo is not None:
+        return now_utc.astimezone(ZoneInfo("Asia/Manila"))
+    return now_utc.astimezone(timezone(timedelta(hours=8)))
+
+
+def _normalized_center(bbox: Tuple[int, int, int, int], frame_width: int, frame_height: int) -> Tuple[float, float]:
+    bbox_x, bbox_y, bbox_w, bbox_h = bbox
+    center_x = (bbox_x + bbox_w / 2.0) / max(1, frame_width)
+    center_y = (bbox_y + bbox_h / 2.0) / max(1, frame_height)
+    return (
+        float(np.clip(center_x, 0.0, 1.0)),
+        float(np.clip(center_y, 0.0, 1.0)),
+    )
+
+
 def run_analysis(
     pipeline: VisionPipeline,
     source: Union[int, str],
@@ -80,14 +208,14 @@ def run_analysis(
 
     detection_rows: List[Dict[str, Union[str, float, int]]] = []
     preview_image: Optional[np.ndarray] = None
-    log_entries: List[Dict[str, Any]] = []
-    recent_tracks: List[Dict[str, Any]] = []
+    deduper = DetectionDeduper()
+    log_buffer = DetectionLogBuffer()
+    ui = AnalysisUI(progress_bar, frame_placeholder, status_placeholder, preview_stride)
 
     start_time = time.time()
     processed_frames = 0
     frame_idx = 0
     stopped_by_user = False
-    flush_threshold = 50
 
     try:
         while True:
@@ -108,137 +236,45 @@ def run_analysis(
 
             processed_frames += 1
             frame_timestamp = datetime.now(timezone.utc)
-            if ZoneInfo is not None:
-                manila_ts = frame_timestamp.astimezone(ZoneInfo("Asia/Manila"))
-            else:
-                phil_tz = timezone(timedelta(hours=8))
-                manila_ts = frame_timestamp.astimezone(phil_tz)
-            track_cutoff = frame_timestamp
-
-            # Remove stale tracks
-            track_ttl_seconds = 6.0
-            recent_tracks = [
-                track
-                for track in recent_tracks
-                if (track_cutoff - track["logged_at"]).total_seconds() <= track_ttl_seconds
-            ]
+            manila_ts = _current_manila_time(frame_timestamp)
 
             if detections or preview_image is None:
                 preview_image = annotated.copy()
 
-            if processed_frames % max(1, preview_stride) == 0 or detections:
-                rgb_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-                _call_with_width(
-                    frame_placeholder.image,
-                    rgb_frame,
-                    caption=f"Frame {frame_idx}",
-                    channels="RGB",
-                )
+            ui.show_frame(annotated, frame_idx, processed_frames, force=bool(detections))
 
             for det in detections:
-                label_text = det.gender_label or det.class_label or "Person"
-                if isinstance(label_text, str):
-                    label_text = label_text.title()
-
-                bbox_x, bbox_y, bbox_w, bbox_h = det.bbox
-                center_x = (bbox_x + bbox_w / 2.0) / max(1, frame_width)
-                center_y = (bbox_y + bbox_h / 2.0) / max(1, frame_height)
-                normalized_center = (float(np.clip(center_x, 0.0, 1.0)), float(np.clip(center_y, 0.0, 1.0)))
-
-                matched_track: Optional[Dict[str, Any]] = None
-                duplicate_distance = 0.06
-                for track in recent_tracks:
-                    dx = normalized_center[0] - track["center_x"]
-                    dy = normalized_center[1] - track["center_y"]
-                    dist = np.hypot(dx, dy)
-                    time_diff = (frame_timestamp - track["logged_at"]).total_seconds()
-                    if dist <= duplicate_distance and time_diff <= track_ttl_seconds:
-                        matched_track = track
-                        break
-
-                if matched_track:
-                    matched_track["logged_at"] = frame_timestamp
-                    matched_track["center_x"] = normalized_center[0]
-                    matched_track["center_y"] = normalized_center[1]
+                normalized_center = _normalized_center(det.bbox, frame_width, frame_height)
+                if not deduper.should_log(frame_timestamp, normalized_center):
                     continue
 
-                recent_tracks.append(
-                    {
-                        "center_x": normalized_center[0],
-                        "center_y": normalized_center[1],
-                        "logged_at": frame_timestamp,
-                    }
+                snapshot = DetectionSnapshot.from_detection(frame_idx, det)
+                detection_rows.append(snapshot.to_row())
+
+                log_entry = DetectionLogEntry.from_detection(
+                    run_id=run_id,
+                    detection=det,
+                    logged_at=manila_ts,
+                    frame_idx=frame_idx,
+                    processed_frame=processed_frames,
+                    normalized_center=normalized_center,
+                    frame_dimensions=(frame_width, frame_height),
                 )
+                log_buffer.add(log_entry)
 
-                detection_rows.append(
-                    {
-                        "frame": frame_idx,
-                        "source": "Age/Gender" if det.source == "age_gender" else "Person",
-                        "label": label_text,
-                        "age_range": det.age_range or "",
-                        "age_estimate": det.age_estimate if det.age_estimate is not None else np.nan,
-                        "confidence": det.confidence,
-                        "bbox_x": bbox_x,
-                        "bbox_y": bbox_y,
-                        "bbox_w": bbox_w,
-                        "bbox_h": bbox_h,
-                    }
-                )
-
-                log_entries.append(
-                    {
-                        "run_id": run_id,
-                        "logged_at": manila_ts,
-                        "frame_idx": frame_idx,
-                        "processed_frame": processed_frames,
-                        "source": "Age/Gender" if det.source == "age_gender" else "Person",
-                        "label": label_text,
-                        "gender": det.gender_label.capitalize() if det.gender_label else "Unknown",
-                        "age_range": det.age_range or "",
-                        "age_estimate": det.age_estimate if det.age_estimate is not None else np.nan,
-                        "confidence": float(det.confidence),
-                        "bbox_x": bbox_x,
-                        "bbox_y": bbox_y,
-                        "bbox_w": bbox_w,
-                        "bbox_h": bbox_h,
-                        "center_x": normalized_center[0],
-                        "center_y": normalized_center[1],
-                        "frame_width": frame_width,
-                        "frame_height": frame_height,
-                    }
-                )
-                if len(log_entries) >= flush_threshold:
-                    append_detection_logs(log_entries)
-                    log_entries.clear()
-
-            if total_frames:
-                progress_ratio = min(1.0, frame_idx / total_frames)
-                progress_value = int(progress_ratio * 100)
-                progress_bar.progress(progress_value, text=f"Processed {processed_frames} frame(s)")
-            else:
-                progress_bar.progress(0, text=f"Processed {processed_frames} frame(s)")
-
-            if processed_frames % max(1, preview_stride) == 0:
-                status_placeholder.info(f"Frames processed: {processed_frames}")
+            ui.update_progress(frame_idx, total_frames, processed_frames)
+            ui.update_status(processed_frames)
     finally:
-        if log_entries:
-            append_detection_logs(log_entries)
-            log_entries.clear()
+        log_buffer.close()
         cap.release()
 
     elapsed = time.time() - start_time
     if processed_frames == 0:
         if stopped_by_user:
-            progress_bar.progress(0, text="Analysis stopped")
-            status_placeholder.info("Analysis stopped before any frames were processed.")
+            ui.stop_without_frames()
             return detection_rows, preview_image, processed_frames, 0.0, elapsed
         raise RuntimeError("No frames were processed from the selected source.")
 
     fps = processed_frames / elapsed if elapsed > 0 else 0.0
-    if stopped_by_user:
-        progress_bar.progress(0, text="Analysis stopped")
-        status_placeholder.warning(f"Analysis stopped by user after {processed_frames} frame(s).")
-    else:
-        progress_bar.progress(100, text="Analysis complete")
-        status_placeholder.success(f"Completed in {elapsed:.1f}s ({fps:.2f} FPS)")
+    ui.finish(processed_frames=processed_frames, fps=fps, elapsed=elapsed, stopped=stopped_by_user)
     return detection_rows, preview_image, processed_frames, fps, elapsed
