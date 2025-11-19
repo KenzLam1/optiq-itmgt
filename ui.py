@@ -41,23 +41,23 @@ class SidebarConfig:
     stop_clicked: bool
     clear_db_requested: bool
 
-
+"""helper to ensure session state variables are initialized."""
 def ensure_session_state() -> None:
-    if "stop_requested" not in st.session_state:
+    if "stop_requested" not in st.session_state: #If stop requested key doesnt exist, create it and set to false (no request).
         st.session_state.stop_requested = False
-    if "last_run_summary" not in st.session_state:
+    if "last_run_summary" not in st.session_state: #Stores info about the last run. Starts as None (no summary yet).
         st.session_state.last_run_summary = None
-    if "last_preview_image" not in st.session_state:
+    if "last_preview_image" not in st.session_state: #Stores the last preview image shown in the UI. Starts as None (no image yet).
         st.session_state.last_preview_image = None
-    if "current_run_id" not in st.session_state:
+    if "current_run_id" not in st.session_state: #Stores the current run ID. Starts as None (no current run yet).
         st.session_state.current_run_id = None
-    if "refresh_requested" not in st.session_state:
+    if "refresh_requested" not in st.session_state: #Tracks if a refresh is requested. Starts as False (no request).
         st.session_state.refresh_requested = False
-    if "show_clear_prompt" not in st.session_state:
+    if "show_clear_prompt" not in st.session_state: #Tracks if the clear logs prompt should be shown. Starts as False (no prompt).
         st.session_state.show_clear_prompt = False
-    if "clear_confirmed" not in st.session_state:
+    if "clear_confirmed" not in st.session_state: #Tracks if the user confirmed clearing logs. Starts as False (not confirmed).
         st.session_state.clear_confirmed = False
-    if not st.session_state.get("db_initialized"):
+    if not st.session_state.get("db_initialized"): #Checks if the database has been initialized. If not, it initializes it and sets the flag to True to prevent reinitializing.
         initialize_database()
         st.session_state.db_initialized = True
 
