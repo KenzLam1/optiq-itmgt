@@ -13,41 +13,41 @@ DB_PATH = DATA_DIR / "detections.db"
 
 TABLE_NAME = "detections"
 TABLE_COLUMNS: Sequence[str] = (
-    "run_id",
-    "logged_at",
-    "frame_idx",
-    "processed_frame",
-    "source",
-    "label",
-    "gender",
-    "age_range",
-    "age_estimate",
-    "confidence",
-    "bbox_x",
-    "bbox_y",
-    "bbox_w",
-    "bbox_h",
-    "center_x",
-    "center_y",
-    "frame_width",
-    "frame_height",
+    "run_id",               #ID for a specific run/session of your video analysis.
+    "logged_at",            #Timestamp indicating when the detection was logged.
+    "frame_idx",            #Index of the frame in the video where the detection occurred.
+    "processed_frame",      #Indicates whether the frame was processed (1) or not (0).                     
+    "source",               #Source of the video (e.g., file or camera ID).
+    "label",                #Label assigned to the detected object (e.g., "person").
+    "gender",               #Estimated gender of the detected person.
+    "age_range",            #Estimated age range of the detected person (e.g., "20-30").
+    "age_estimate",         #Estimated age of the detected person as a numerical value.
+    "confidence",           #Confidence score of the detection (e.g., 0.85 for 85% confidence).
+    "bbox_x",               #X-coordinate of the bounding box for the detected object.
+    "bbox_y",               #Y-coordinate of the bounding box for the detected object.
+    "bbox_w",               #Width of the bounding box for the detected object.
+    "bbox_h",               #Height of the bounding box for the detected object.
+    "center_x",             #X-coordinate of the center point of the detected object.
+    "center_y",             #Y-coordinate of the center point of the detected object.
+    "frame_width",          #Width of the video frame.
+    "frame_height",         #Height of the video frame.
 )
 
-
+#creates the data directory if it does not exist
 def _ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-
+#connects to the sqlite database, creating it if it does not exist
 def _connect() -> sqlite3.Connection:
     _ensure_data_dir()
-    conn = sqlite3.connect(DB_PATH)
-    conn.execute("PRAGMA journal_mode=WAL;")
-    conn.execute("PRAGMA synchronous=NORMAL;")
+    conn = sqlite3.connect(DB_PATH) # Opens (or creates, if missing) the database file
+    conn.execute("PRAGMA journal_mode=WAL;") # configure sqlite with WAL mode (suposedly faster)
+    conn.execute("PRAGMA synchronous=NORMAL;") # configure sqlite with normal sync
     return conn
 
-
+#Makes sure the right DB structure (schema) exists
 def _ensure_schema(conn: sqlite3.Connection) -> None:
-    conn.execute(
+    conn.execute(   
         f"""
         CREATE TABLE IF NOT EXISTS {TABLE_NAME} (
             run_id TEXT NOT NULL,
@@ -71,12 +71,11 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    # Create indexes for faster querying for timestamp and run_id
     conn.execute(
-        f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_logged_at ON {TABLE_NAME} (logged_at);"
-    )
+        f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_logged_at ON {TABLE_NAME} (logged_at);")
     conn.execute(
-        f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_run_id ON {TABLE_NAME} (run_id);"
-    )
+        f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_run_id ON {TABLE_NAME} (run_id);")
 
 
 def initialize_database() -> None:
@@ -121,9 +120,9 @@ def clear_detection_logs() -> None:
         conn.execute(f"DELETE FROM {TABLE_NAME};")
         conn.commit()
 
-
+#Pull detection logs from the sql database and return as a pandas DataFrame.
 def load_detection_logs() -> pd.DataFrame:
-    if not DB_PATH.exists():
+    if not DB_PATH.exists(): # if database does not exist, return empty DataFrame with expected table columns
         return pd.DataFrame(columns=TABLE_COLUMNS)
 
     with _connect() as conn:
