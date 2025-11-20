@@ -495,14 +495,7 @@ def render_detection_log_preview(
 
 def render_intro() -> None:
     st.title("Optiq Retail Analytics")
-    st.caption("Streamlit dashboard for age and gender analytics powered by YOLO.")
-    st.markdown(
-        """
-        Configure the capture source and press **Run analysis** to process a batch of frames.
-        The dashboard reuses the original YOLO pipeline and displays aggregated detections,
-        annotated previews, and downloadable results.
-        """
-    )
+    st.caption("Analytics dashboard for Foot Traffic and Demographic analytics powered by AI.")
 
 
 def get_model_paths() -> Dict[str, str]:

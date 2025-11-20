@@ -10,7 +10,6 @@ from detections import DetectionLogEntry
 
 DATA_DIR = Path("data")
 DB_PATH = DATA_DIR / "detections.db"
-LEGACY_CSV_PATH = DATA_DIR / "detections_log.csv"
 
 TABLE_NAME = "detections"
 TABLE_COLUMNS: Sequence[str] = (
@@ -83,7 +82,6 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
 def initialize_database() -> None:
     with _connect() as conn:
         _ensure_schema(conn)
-    _bootstrap_from_legacy_csv_if_needed()
 
 
 def _normalize_row(row: Union[DetectionLogEntry, Dict[str, Any]]) -> Dict[str, Any]:
@@ -125,7 +123,6 @@ def clear_detection_logs() -> None:
 
 
 def load_detection_logs() -> pd.DataFrame:
-    _bootstrap_from_legacy_csv_if_needed()
     if not DB_PATH.exists():
         return pd.DataFrame(columns=TABLE_COLUMNS)
 
@@ -141,45 +138,3 @@ def load_detection_logs() -> pd.DataFrame:
         return df
     df["logged_at"] = df["logged_at"].dt.tz_convert("Asia/Manila")
     return df
-
-
-def _bootstrap_from_legacy_csv_if_needed() -> None:
-    if not LEGACY_CSV_PATH.exists():
-        return
-
-    db_exists = DB_PATH.exists()
-    with _connect() as conn:
-        _ensure_schema(conn)
-        if db_exists:
-            count = conn.execute(f"SELECT COUNT(1) FROM {TABLE_NAME};").fetchone()[0]
-            if count:
-                return
-
-        legacy_df = pd.read_csv(LEGACY_CSV_PATH)
-        if legacy_df.empty:
-            return
-
-        if "logged_at" in legacy_df.columns:
-            legacy_df["logged_at"] = pd.to_datetime(legacy_df["logged_at"], errors="coerce", utc=True)
-            legacy_df = legacy_df.dropna(subset=["logged_at"])
-            legacy_df["logged_at"] = legacy_df["logged_at"].dt.tz_convert("Asia/Manila")
-
-        missing_cols = [col for col in TABLE_COLUMNS if col not in legacy_df.columns]
-        for col in missing_cols:
-            legacy_df[col] = None
-        legacy_df = legacy_df[list(TABLE_COLUMNS)]
-
-        placeholders = ",".join("?" for _ in TABLE_COLUMNS)
-        insert_sql = f"""
-            INSERT INTO {TABLE_NAME} ({",".join(TABLE_COLUMNS)})
-            VALUES ({placeholders});
-        """
-        values = [
-            tuple(
-                row[col].isoformat() if col == "logged_at" and hasattr(row[col], "isoformat") else row[col]
-                for col in TABLE_COLUMNS
-            )
-            for row in legacy_df.to_dict(orient="records")
-        ]
-        conn.executemany(insert_sql, values)
-        conn.commit()
