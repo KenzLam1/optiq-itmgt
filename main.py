@@ -148,10 +148,10 @@ def _render_run_tab(sidebar, model_paths, just_cleared: bool) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Optiq Retail Analytics", layout="wide")
+    st.set_page_config(page_title="Optiq Retail Analytics", layout="wide") # set page metadata
 
-    ensure_session_state()
-    render_intro()
+    ensure_session_state() # initialize session state variables
+    render_intro() # display title and caption
     _refresh_session_logs()
 
     sidebar = render_sidebar()
