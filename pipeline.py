@@ -13,7 +13,7 @@ from models import YOLOAgeGenderDetector, YOLOPersonDetector
 class VisionPipeline:
     """Runs YOLO detections on incoming frames."""
 
-    def __init__(
+    def __init__( #defining variables
         self,
         model_path: str,
         person_model_path: str,
