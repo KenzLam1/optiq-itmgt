@@ -10,26 +10,7 @@ import streamlit as st
 
 from config import AGE_GENDER_MODEL_PATH, PERSON_DETECTOR_MODEL_PATH
 from data_store import initialize_database, load_detection_logs
-
-try:
-    import torch
-except Exception:  # noqa: BLE001
-    torch = None  # type: ignore[assignment]
-
-
-def _stretch_value(stretch: bool) -> str:
-    return "stretch" if stretch else "content"
-
-
-def _call_with_width(fn: Any, *args: Any, stretch: bool = True, **kwargs: Any) -> Any:
-    """Try the modern width API and gracefully fall back for older Streamlit builds."""
-    width_value = _stretch_value(stretch)
-    try:
-        return fn(*args, width=width_value, **kwargs)
-    except TypeError as exc:
-        if "width" not in str(exc):
-            raise
-        return fn(*args, use_container_width=stretch, **kwargs)
+from hardware import available_device_choices
 
 
 DEVICE_LABELS = {
@@ -42,86 +23,57 @@ DEVICE_LABELS = {
 
 @dataclass
 class SidebarConfig:
+    """Container for all sidebar configuration options selected by the user."""
+
     device_choice: str
     enable_age_detector: bool
     enable_person_detector: bool
     age_conf: float
     person_conf: float
-    imgsz: int
     source_type: str
     uploaded_file: Optional[Any]
-    file_path: str
-    stream_url: str
     camera_index: int
-    frame_skip: int
-    preview_stride: int
     run_clicked: bool
     stop_clicked: bool
     clear_db_requested: bool
 
-
+"""helper to ensure session state variables are initialized."""
 def ensure_session_state() -> None:
-    if "stop_requested" not in st.session_state:
+    if "stop_requested" not in st.session_state: #If stop requested key doesnt exist, create it and set to false (no request).
         st.session_state.stop_requested = False
-    if "last_run_summary" not in st.session_state:
+    if "last_run_summary" not in st.session_state: #Stores info about the last run. Starts as None (no summary yet).
         st.session_state.last_run_summary = None
-    if "last_preview_image" not in st.session_state:
+    if "last_preview_image" not in st.session_state: #Stores the last preview image shown in the UI. Starts as None (no image yet).
         st.session_state.last_preview_image = None
-    if "current_run_id" not in st.session_state:
+    if "current_run_id" not in st.session_state: #Stores the current run ID. Starts as None (no current run yet).
         st.session_state.current_run_id = None
-    if "refresh_requested" not in st.session_state:
+    if "refresh_requested" not in st.session_state: #Tracks if a refresh is requested. Starts as False (no request).
         st.session_state.refresh_requested = False
-    if "show_clear_prompt" not in st.session_state:
+    if "show_clear_prompt" not in st.session_state: #Tracks if the clear logs prompt should be shown. Starts as False (no prompt).
         st.session_state.show_clear_prompt = False
-    if "clear_confirmed" not in st.session_state:
+    if "clear_confirmed" not in st.session_state: #Tracks if the user confirmed clearing logs. Starts as False (not confirmed).
         st.session_state.clear_confirmed = False
-    if not st.session_state.get("db_initialized"):
+    if not st.session_state.get("db_initialized"): #Checks if the database has been initialized. If not, it initializes it and sets the flag to True to prevent reinitializing.
         initialize_database()
         st.session_state.db_initialized = True
 
-
-def _available_device_choices() -> tuple[list[str], bool]:
-    """Return supported device options and whether MPS is available."""
-    options: List[str] = ["auto", "cpu"]
-    mps_available = False
-
-    if torch is None:
-        return options, mps_available
-
-    try:
-        if torch.cuda.is_available():
-            options.append("cuda")
-    except Exception:  # noqa: BLE001
-        pass
-
-    try:
-        mps_backend = getattr(torch.backends, "mps", None)
-        if mps_backend is not None and mps_backend.is_available():
-            options.append("mps")
-            mps_available = True
-    except Exception:  # noqa: BLE001
-        pass
-
-    return options, mps_available
-
-
+"""Render the sidebar UI and return the selected configuration as a SidebarConfig object."""
 def render_sidebar() -> SidebarConfig:
     with st.sidebar:
         st.header("Models")
-        st.caption("Using default model weight files bundled with the app.")
-        device_options, mps_available = _available_device_choices()
+        device_options, mps_available = available_device_choices()  #Get available device options
         device_choice = st.selectbox(
             "Device",
             options=device_options,
             index=0,
-            format_func=lambda opt: DEVICE_LABELS.get(opt, opt.upper()),
+            format_func=lambda opt: DEVICE_LABELS.get(opt, opt.upper()), #Display user-friendly labels
         )
         if mps_available:
             st.caption("Apple Silicon detected — pick 'Apple Silicon (MPS)' for higher FPS on Mac.")
         enable_age_detector = st.toggle(
             "Run age/gender detector",
             value=True,
-            help="Disable to skip age/gender predictions (person counts will still run if enabled).",
+            help="Disable to skip age/gender predictions for higher FPS on slower machines.",
         )
         enable_person_detector = st.toggle(
             "Run person detector (second model)",
@@ -132,7 +84,6 @@ def render_sidebar() -> SidebarConfig:
             st.error("Enable at least one detector to run analysis.")
         age_conf = st.slider("Age/Gender confidence", 0.05, 0.95, 0.40, 0.05)
         person_conf = st.slider("Person confidence", 0.05, 0.95, 0.35, 0.05)
-        imgsz = 640
 
         st.header("Capture source")
         source_type = st.selectbox(
@@ -140,9 +91,8 @@ def render_sidebar() -> SidebarConfig:
             options=["Upload video", "Webcam"],
             index=0,
         )
-        uploaded_file = None
-        file_path = ""
-        stream_url = ""
+        # Initialize variables with default values. Holds source-specific inputs
+        uploaded_file = None    
         camera_index = 0
 
         if source_type == "Upload video":
@@ -150,23 +100,21 @@ def render_sidebar() -> SidebarConfig:
         elif source_type == "Webcam":
             camera_index = st.number_input("Camera index", min_value=0, max_value=10, value=0, step=1)
 
-        frame_skip = 1
-        preview_stride = 1
         run_clicked = st.button("Run analysis", type="primary")
         stop_clicked = st.button("Stop analysis", type="secondary")
         clear_db_requested = st.button("⚠️ Clear detection logs", type="secondary", key="clear_logs_button")
         if clear_db_requested:
-            st.session_state.show_clear_prompt = True
+            st.session_state.show_clear_prompt = True   # Show confirmation prompt
 
         if st.session_state.get("show_clear_prompt"):
             st.warning("Clearing logs will delete all stored detections and analytics history.")
             confirm = st.button("Confirm clear", type="primary", key="confirm_clear_logs")
             cancel = st.button("Cancel", type="secondary", key="cancel_clear_logs")
             if confirm:
-                st.session_state.clear_confirmed = True
-                st.session_state.show_clear_prompt = False
+                st.session_state.clear_confirmed = True     # Set flag to confirm clearing logs
+                st.session_state.show_clear_prompt = False  # Hide the prompt after confirmation
             elif cancel:
-                st.session_state.show_clear_prompt = False
+                st.session_state.show_clear_prompt = False  # Hide the prompt if cancelled
 
     return SidebarConfig(
         device_choice=device_choice,
@@ -174,14 +122,9 @@ def render_sidebar() -> SidebarConfig:
         enable_person_detector=enable_person_detector,
         age_conf=age_conf,
         person_conf=person_conf,
-        imgsz=imgsz,
         source_type=source_type,
         uploaded_file=uploaded_file,
-        file_path=file_path,
-        stream_url=stream_url,
         camera_index=camera_index,
-        frame_skip=frame_skip,
-        preview_stride=preview_stride,
         run_clicked=run_clicked,
         stop_clicked=stop_clicked,
         clear_db_requested=clear_db_requested,
@@ -355,7 +298,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["logged_at_local:T", "detections:Q"],
                 )
             )
-            _call_with_width(st.altair_chart, traffic_chart)
+            st.altair_chart(traffic_chart, width="stretch")
 
     st.subheader("Detection Heatmap")
     heatmap_bins = st.slider("Heatmap granularity", min_value=5, max_value=30, value=10)
@@ -384,7 +327,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["x_bin:O", "y_bin:O", "count:Q"],
                 )
             )
-            _call_with_width(st.altair_chart, heat_chart)
+            st.altair_chart(heat_chart, width="stretch")
 
     st.subheader("Age Distribution")
     age_df = filtered.dropna(subset=["age_estimate"])
@@ -413,7 +356,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["age_bucket:N", "count:Q"],
                 )
             )
-            _call_with_width(st.altair_chart, age_chart)
+            st.altair_chart(age_chart, width="stretch")
 
     st.subheader("Gender Distribution")
     gender_counts = (
@@ -435,7 +378,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                 tooltip=["gender:N", "count:Q"],
             )
         )
-        _call_with_width(st.altair_chart, gender_chart)
+        st.altair_chart(gender_chart, width="stretch")
 
 
 def render_detection_log_preview(
@@ -447,9 +390,9 @@ def render_detection_log_preview(
     logs_df: Optional[pd.DataFrame] = None,
 ) -> None:
     st.subheader("Latest Detections Preview")
-
-    session_summary = st.session_state.get("last_run_summary")
-    if run_id is None and session_summary:
+    # Fill in missing parameters from session state if not provided. Ensures preview works even if called without all args.
+    session_summary = st.session_state.get("last_run_summary") 
+    if run_id is None and session_summary:      
         run_id = session_summary.get("run_id")
     if preview_image is None:
         preview_image = st.session_state.get("last_preview_image")
@@ -459,14 +402,14 @@ def render_detection_log_preview(
         fps = session_summary.get("fps")
     if elapsed is None and session_summary:
         elapsed = session_summary.get("elapsed")
-
+    # Use provided logs_df or load from data store if not provided. Makes a copy to avoid modifications.
     logs = logs_df.copy() if logs_df is not None else load_detection_logs().copy()
     if logs.empty:
         if preview_image is not None:
-            _call_with_width(
-                st.image,
+            st.image(
                 cv2.cvtColor(preview_image, cv2.COLOR_BGR2RGB),
                 caption="Most recent annotated frame",
+                width="stretch",
             )
         st.info("No detection logs recorded yet. Run an analysis to populate the dataset.")
         return
@@ -489,10 +432,10 @@ def render_detection_log_preview(
     )
 
     if preview_image is not None:
-        _call_with_width(
-            st.image,
+        st.image(
             cv2.cvtColor(preview_image, cv2.COLOR_BGR2RGB),
             caption="Most recent annotated frame",
+            width="stretch",
         )
 
     metrics = st.columns(4)
@@ -524,7 +467,7 @@ def render_detection_log_preview(
     preview_df = run_logs[existing_cols].sort_values("logged_at", ascending=False).copy()
     if "logged_at" in preview_df.columns:
         preview_df["logged_at"] = preview_df["logged_at"].dt.tz_localize(None).dt.strftime("%Y-%m-%d %H:%M:%S")
-    _call_with_width(st.dataframe, preview_df, hide_index=True)
+        st.dataframe(preview_df, hide_index=True, width="stretch")
 
     download_df = logs.copy()
     download_df["logged_at"] = download_df["logged_at"].dt.tz_localize(None)
@@ -538,16 +481,9 @@ def render_detection_log_preview(
 
 def render_intro() -> None:
     st.title("Optiq Retail Analytics")
-    st.caption("Streamlit dashboard for age and gender analytics powered by YOLO.")
-    st.markdown(
-        """
-        Configure the capture source and press **Run analysis** to process a batch of frames.
-        The dashboard reuses the original YOLO pipeline and displays aggregated detections,
-        annotated previews, and downloadable results.
-        """
-    )
+    st.caption("Analytics dashboard for Foot Traffic and Demographic analytics powered by AI.")
 
-
+"""Returns a dict mapping the two models to their respective file paths."""
 def get_model_paths() -> Dict[str, str]:
     return {
         "age_model_path": AGE_GENDER_MODEL_PATH,
