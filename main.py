@@ -38,12 +38,12 @@ def _handle_pending_clear_request() -> bool:
     st.success("Detection logs have been cleared.") 
     return True 
 
-
+# Update stop requested and current run ID flags based on user interactions
 def _update_stop_flags(run_clicked: bool, stop_clicked: bool) -> None:
     if stop_clicked:
         st.session_state.stop_requested = True
     if run_clicked:
-        st.session_state.stop_requested = False
+        st.session_state.stop_requested = False # Reset stop requested back to false on new run
 
 
 def _execute_run(sidebar, model_paths) -> None:
@@ -115,24 +115,24 @@ def _execute_run(sidebar, model_paths) -> None:
         if st.session_state.get("current_run_id"):
             st.session_state.current_run_id = None
 
-
+# Acknowledge user stop request, reset the stop requested flag, and refresh the latest detections
 def _acknowledge_stop() -> None:
     st.session_state.stop_requested = False
     _refresh_session_logs()
     st.info("Stop acknowledged. Latest detections refreshed.")
 
-
+# Render idle state information when no run is active
 def _render_idle_state() -> None:
     summary = st.session_state.get("last_run_summary")
     if summary:
         st.success(
             f"Last run processed {summary['processed_frames']} frame(s) "
-            f"at {summary['fps']:.2f} FPS."
+            f"at {summary['fps']:.2f} FPS."     # format fps to 2 decimal places
         )
     else:
         st.info("Adjust the settings in the sidebar and click **Run analysis** to begin.")
 
-
+# Render the "Run Analysis" tab UI and handle user interactions
 def _render_run_tab(sidebar, model_paths, just_cleared: bool) -> None:
     st.subheader("Run Analysis")
     if just_cleared:
@@ -157,19 +157,19 @@ def main() -> None:
     render_intro()  # display title and caption
     _refresh_session_logs()     # load latest detection logs into session state
 
-    sidebar = render_sidebar()
-    model_paths = get_model_paths()
+    sidebar = render_sidebar()  # render the sidebar UI and get selected user configurations
+    model_paths = get_model_paths()  
 
-    just_cleared = _handle_pending_clear_request()
-    _update_stop_flags(run_clicked=sidebar.run_clicked, stop_clicked=sidebar.stop_clicked)
-
-    run_tab, preview_tab, analytics_tab = st.tabs(
+    just_cleared = _handle_pending_clear_request()  
+    _update_stop_flags(run_clicked=sidebar.run_clicked, stop_clicked=sidebar.stop_clicked) # update stop requested session state
+    
+    run_tab, preview_tab, analytics_tab = st.tabs(  
         ["Run Analysis", "Latest Detections", "Analytics"]
     )
 
     with run_tab:
         _render_run_tab(sidebar, model_paths, just_cleared)
-
+    #pulls sesstion state data for reuse in other tabs
     current_logs = st.session_state.get("latest_detection_logs", load_detection_logs())
     summary_for_display = st.session_state.get("last_run_summary")
     preview_for_display = st.session_state.get("last_preview_image")

@@ -391,9 +391,9 @@ def render_detection_log_preview(
     logs_df: Optional[pd.DataFrame] = None,
 ) -> None:
     st.subheader("Latest Detections Preview")
-
-    session_summary = st.session_state.get("last_run_summary")
-    if run_id is None and session_summary:
+    # Fill in missing parameters from session state if not provided. Ensures preview works even if called without all args.
+    session_summary = st.session_state.get("last_run_summary") 
+    if run_id is None and session_summary:      
         run_id = session_summary.get("run_id")
     if preview_image is None:
         preview_image = st.session_state.get("last_preview_image")
@@ -403,7 +403,7 @@ def render_detection_log_preview(
         fps = session_summary.get("fps")
     if elapsed is None and session_summary:
         elapsed = session_summary.get("elapsed")
-
+    # Use provided logs_df or load from data store if not provided. Makes a copy to avoid modifications.
     logs = logs_df.copy() if logs_df is not None else load_detection_logs().copy()
     if logs.empty:
         if preview_image is not None:
@@ -484,7 +484,7 @@ def render_intro() -> None:
     st.title("Optiq Retail Analytics")
     st.caption("Analytics dashboard for Foot Traffic and Demographic analytics powered by AI.")
 
-
+"""Returns a dict mapping the two models to their respective file paths."""
 def get_model_paths() -> Dict[str, str]:
     return {
         "age_model_path": AGE_GENDER_MODEL_PATH,
