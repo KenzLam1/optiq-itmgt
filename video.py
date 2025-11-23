@@ -185,7 +185,7 @@ def run_analysis(
     stop_requested_fn: Callable[[], bool],
     run_id: str,
 ) -> Tuple[List[Dict[str, Union[str, float, int]]], Optional[np.ndarray], int, float, float]:
-    cap = cv2.VideoCapture(source)
+    cap = cv2.VideoCapture(source) #rawest form of data a 2D array of RGB numbers
     if not cap.isOpened():
         raise RuntimeError("Unable to open the selected video source.")
 
@@ -209,7 +209,7 @@ def run_analysis(
                 stopped_by_user = True
                 break
 
-            ok, frame = cap.read()
+            ok, frame = cap.read() #reads frame data, exports it as a bool if it was read correctly and the data itself
             if not ok:
                 break
 
