@@ -12,7 +12,8 @@ DATA_DIR = Path("data")
 DB_PATH = DATA_DIR / "detections.db"
 
 TABLE_NAME = "detections"
-TABLE_COLUMNS: Sequence[str] = (
+"""Tuple of all the columns names in the detection logs table"""
+TABLE_COLUMNS: Sequence[str] = ( 
     "run_id",               #ID for a specific run/session of your video analysis.
     "logged_at",            #Timestamp indicating when the detection was logged.
     "frame_idx",            #Index of the frame in the video where the detection occurred.
@@ -33,11 +34,11 @@ TABLE_COLUMNS: Sequence[str] = (
     "frame_height",         #Height of the video frame.
 )
 
-#creates the data directory if it does not exist
+"""creates the data directory if it does not exist"""
 def _ensure_data_dir() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-#connects to the sqlite database, creating it if it does not exist
+"""connects to the sqlite database, creating it if it does not exist"""
 def _connect() -> sqlite3.Connection:
     _ensure_data_dir()
     conn = sqlite3.connect(DB_PATH) # Opens (or creates, if missing) the database file
@@ -45,7 +46,7 @@ def _connect() -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL;") # configure sqlite with normal sync
     return conn
 
-#Makes sure the right DB structure (schema) exists
+"""Makes sure the right DB structure (schema) exists""" 
 def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(   
         f"""
@@ -77,63 +78,68 @@ def _ensure_schema(conn: sqlite3.Connection) -> None:
     conn.execute(
         f"CREATE INDEX IF NOT EXISTS idx_{TABLE_NAME}_run_id ON {TABLE_NAME} (run_id);")
 
-
+"""Initializes the database by ensuring the data directory and schema exist"""
 def initialize_database() -> None:
     with _connect() as conn:
         _ensure_schema(conn)
 
-
-def _normalize_row(row: Union[DetectionLogEntry, Dict[str, Any]]) -> Dict[str, Any]:
-    payload = row.to_row() if isinstance(row, DetectionLogEntry) else row
-    normalized: Dict[str, Any] = {}
+"""Turn any row into a dictionary with the right columns and formats so its ready to go into the database"""
+def _normalize_row(row: Union[DetectionLogEntry, Dict[str, Any]]) -> Dict[str, Any]: 
+    payload = row.to_row() if isinstance(row, DetectionLogEntry) else row   #If row is a DetectionLogEntry, convert it to a dictionary; otherwise, assume it's already a dictionary.
+    normalized: Dict[str, Any] = {}     # Prepare an empty dictionary to hold values.  
     for column in TABLE_COLUMNS:
-        value = payload.get(column)
-        if column == "logged_at" and value is not None:
+        value = payload.get(column) # Get the value for each expected column
+        if column == "logged_at" and value is not None: # Convert datetime to ISO format string for storage 
             if hasattr(value, "isoformat"):
                 value = value.isoformat()
-        normalized[column] = value
+        normalized[column] = value  # Assign the (possibly converted) value to the normalized dictionary
     return normalized
 
-
+"""Append multiple detection log entries to the SQLite database"""
 def append_detection_logs(entries: Iterable[Union[DetectionLogEntry, Dict[str, Any]]]) -> None:
-    rows = [_normalize_row(entry) for entry in entries]
+    rows = [_normalize_row(entry) for entry in entries] # Normalize each entry to ensure it matches the database schema
     if not rows:
-        return
+        return  # if there are no rows to insert, exit early
 
-    with _connect() as conn:
-        _ensure_schema(conn)
-        placeholders = ",".join("?" for _ in TABLE_COLUMNS)
-        insert_sql = f"""
-            INSERT INTO {TABLE_NAME} ({",".join(TABLE_COLUMNS)})
-            VALUES ({placeholders});
+    with _connect() as conn:    # Connect to the database
+        _ensure_schema(conn)    # Ensure the database schema is set up before inserting data
+        placeholders = ",".join("?" for _ in TABLE_COLUMNS) # Build the correct number of ? placeholders for the SQL insert
+        # sample: INSERT INTO detections (run_id, logged_at, frame_idx, ...) VALUES (?, ?, ?, ...)
+        insert_sql = f"""       
+            INSERT INTO {TABLE_NAME} ({",".join(TABLE_COLUMNS)})    
+            VALUES ({placeholders});    
         """
-        values = [tuple(row.get(col) for col in TABLE_COLUMNS) for row in rows]
-        conn.executemany(insert_sql, values)
-        conn.commit()
+        values = [tuple(row.get(col) for col in TABLE_COLUMNS) for row in rows]  # Prepare the values for insertion. For each row dict, create a tuple of values in the correct order.
+        conn.executemany(insert_sql, values)    # Execute the batch insert. Runs insert statement for every tuple in values.
+        conn.commit()   
 
-
+"""Clear all detection logs from the database"""
 def clear_detection_logs() -> None:
-    if not DB_PATH.exists():
-        return
-    with _connect() as conn:
-        _ensure_schema(conn)
-        conn.execute(f"DELETE FROM {TABLE_NAME};")
-        conn.commit()
+    if not DB_PATH.exists(): 
+        return                  
+    with _connect() as conn:    
+        _ensure_schema(conn)    
+        conn.execute(f"DELETE FROM {TABLE_NAME};")  
+        conn.commit()   
 
-#Pull detection logs from the sql database and return as a pandas DataFrame.
+"""Pull detection logs from the sql database and return as a pandas DataFrame. Cleans and adjusts timezone as needed."""
 def load_detection_logs() -> pd.DataFrame:
     if not DB_PATH.exists(): # if database does not exist, return empty DataFrame with expected table columns
         return pd.DataFrame(columns=TABLE_COLUMNS)
 
     with _connect() as conn:
         _ensure_schema(conn)
-        query = f"SELECT * FROM {TABLE_NAME} ORDER BY logged_at;"
-        df = pd.read_sql_query(query, conn)
+        query = f"SELECT * FROM {TABLE_NAME} ORDER BY logged_at;"   # Query to select all detection logs ordered by timestamp
+        df = pd.read_sql_query(query, conn) # Load the query results into a pandas DataFrame
+
     if df.empty:
-        return df
-    df["logged_at"] = pd.to_datetime(df["logged_at"], errors="coerce", utc=True)
-    df = df.dropna(subset=["logged_at"])
+        return df   # Early return if DataFrame exists but has no data  
+    
+    df["logged_at"] = pd.to_datetime(df["logged_at"], errors="coerce", utc=True)  # Convert logged_at column to pandas datetime. Invalid timestamps become NaT.
+    df = df.dropna(subset=["logged_at"])    # Drop rows where logged_at is NaT (invalid timestamps)
+
     if df.empty:
-        return df
-    df["logged_at"] = df["logged_at"].dt.tz_convert("Asia/Manila")
-    return df
+        return df   # Early return if DataFrame is empty after dropping invalid timestamps
+    
+    df["logged_at"] = df["logged_at"].dt.tz_convert("Asia/Manila")  # Convert timestamps to Manila timezone
+    return df   # Return the cleaned and timezone-adjusted DataFrame
