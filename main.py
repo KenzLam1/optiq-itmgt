@@ -16,6 +16,10 @@ from ui import (
 )
 from video import prepare_video_source, run_analysis
 
+# Hardcoded values
+DEFAULT_FRAME_SKIP = 1  # Process every frame 
+DEFAULT_PREVIEW_STRIDE = 1  # Show every processed frame in the preview video
+
 # Pull latest detection logs from the database and store in session state
 def _refresh_session_logs() -> None:
     logs = load_detection_logs()
@@ -62,7 +66,7 @@ def _execute_run(sidebar, model_paths) -> None:
         device_summary = getattr(getattr(pipeline, "age_detector", None), "device", "unknown")
         st.caption(f"Models are running on: `{device_summary}`")
 
-        pipeline.set_frame_interval(sidebar.frame_skip)
+        pipeline.set_frame_interval(DEFAULT_FRAME_SKIP)
 
         source, temp_file = prepare_video_source(
             source_type=sidebar.source_type,
@@ -78,7 +82,7 @@ def _execute_run(sidebar, model_paths) -> None:
         detection_rows, preview_image, processed_frames, fps, elapsed = run_analysis(
             pipeline=pipeline,
             source=source,
-            preview_stride=sidebar.preview_stride,
+            preview_stride=DEFAULT_PREVIEW_STRIDE,
             progress_bar=progress_bar,
             frame_placeholder=frame_placeholder,
             status_placeholder=status_placeholder,

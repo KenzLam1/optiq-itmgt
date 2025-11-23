@@ -37,8 +37,6 @@ class SidebarConfig:
     file_path: str
     stream_url: str
     camera_index: int
-    frame_skip: int
-    preview_stride: int
     run_clicked: bool
     stop_clicked: bool
     clear_db_requested: bool
@@ -108,9 +106,6 @@ def render_sidebar() -> SidebarConfig:
             uploaded_file = st.file_uploader("Select a video file", type=["mp4", "mov", "mkv", "avi"])
         elif source_type == "Webcam":
             camera_index = st.number_input("Camera index", min_value=0, max_value=10, value=0, step=1)
-        # Hardcoded values
-        frame_skip = 1      # Process every frame
-        preview_stride = 1  # Show every processed frame in preview
 
         run_clicked = st.button("Run analysis", type="primary")
         stop_clicked = st.button("Stop analysis", type="secondary")
@@ -140,8 +135,6 @@ def render_sidebar() -> SidebarConfig:
         file_path=file_path,
         stream_url=stream_url,
         camera_index=camera_index,
-        frame_skip=frame_skip,
-        preview_stride=preview_stride,
         run_clicked=run_clicked,
         stop_clicked=stop_clicked,
         clear_db_requested=clear_db_requested,
