@@ -24,6 +24,8 @@ DEVICE_LABELS = {
 
 @dataclass
 class SidebarConfig:
+    """Container for all sidebar configuration options selected by the user."""
+
     device_choice: str
     enable_age_detector: bool
     enable_person_detector: bool
@@ -61,24 +63,23 @@ def ensure_session_state() -> None:
         initialize_database()
         st.session_state.db_initialized = True
 
-
+"""Render the sidebar UI and return the selected configuration as a SidebarConfig object."""
 def render_sidebar() -> SidebarConfig:
     with st.sidebar:
         st.header("Models")
-        st.caption("Using default model weight files bundled with the app.")
-        device_options, mps_available = available_device_choices()
+        device_options, mps_available = available_device_choices()  #Get available device options
         device_choice = st.selectbox(
             "Device",
             options=device_options,
             index=0,
-            format_func=lambda opt: DEVICE_LABELS.get(opt, opt.upper()),
+            format_func=lambda opt: DEVICE_LABELS.get(opt, opt.upper()), #Display user-friendly labels
         )
         if mps_available:
             st.caption("Apple Silicon detected — pick 'Apple Silicon (MPS)' for higher FPS on Mac.")
         enable_age_detector = st.toggle(
             "Run age/gender detector",
             value=True,
-            help="Disable to skip age/gender predictions (person counts will still run if enabled).",
+            help="Disable to skip age/gender predictions for higher FPS on slower machines.",
         )
         enable_person_detector = st.toggle(
             "Run person detector (second model)",
@@ -89,7 +90,7 @@ def render_sidebar() -> SidebarConfig:
             st.error("Enable at least one detector to run analysis.")
         age_conf = st.slider("Age/Gender confidence", 0.05, 0.95, 0.40, 0.05)
         person_conf = st.slider("Person confidence", 0.05, 0.95, 0.35, 0.05)
-        imgsz = 640
+        imgsz = 640     # Hardcoded inference image size 
 
         st.header("Capture source")
         source_type = st.selectbox(
@@ -97,7 +98,8 @@ def render_sidebar() -> SidebarConfig:
             options=["Upload video", "Webcam"],
             index=0,
         )
-        uploaded_file = None
+        # Initialize variables with default values. Holds source-specific inputs
+        uploaded_file = None    
         file_path = ""
         stream_url = ""
         camera_index = 0
@@ -106,9 +108,10 @@ def render_sidebar() -> SidebarConfig:
             uploaded_file = st.file_uploader("Select a video file", type=["mp4", "mov", "mkv", "avi"])
         elif source_type == "Webcam":
             camera_index = st.number_input("Camera index", min_value=0, max_value=10, value=0, step=1)
+        # Hardcoded values
+        frame_skip = 1      # Process every frame
+        preview_stride = 1  # Show every processed frame in preview
 
-        frame_skip = 1
-        preview_stride = 1
         run_clicked = st.button("Run analysis", type="primary")
         stop_clicked = st.button("Stop analysis", type="secondary")
         clear_db_requested = st.button("⚠️ Clear detection logs", type="secondary", key="clear_logs_button")

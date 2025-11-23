@@ -16,22 +16,22 @@ from ui import (
 )
 from video import prepare_video_source, run_analysis
 
-
+# Pull latest detection logs from the database and store in session state
 def _refresh_session_logs() -> None:
     logs = load_detection_logs()
-    st.session_state.latest_detection_logs = logs
+    st.session_state.latest_detection_logs = logs # Update latest detection logs attribute in session state
 
-
+# Handle any pending requests to clear detection logs
 def _handle_pending_clear_request() -> bool:
-    if not st.session_state.get("clear_confirmed"):
+    if not st.session_state.get("clear_confirmed"): # if no clear request pending, do nothing
         return False
-    clear_detection_logs()
-    st.session_state.clear_confirmed = False
-    st.session_state.last_run_summary = None
-    st.session_state.last_preview_image = None
-    _refresh_session_logs()
-    st.success("Detection logs have been cleared.")
-    return True
+    clear_detection_logs()  
+    st.session_state.clear_confirmed = False    
+    st.session_state.last_run_summary = None    
+    st.session_state.last_preview_image = None  
+    _refresh_session_logs()  # refresh the latest detection logs in session state
+    st.success("Detection logs have been cleared.") 
+    return True 
 
 
 def _update_stop_flags(run_clicked: bool, stop_clicked: bool) -> None:
@@ -148,11 +148,11 @@ def _render_run_tab(sidebar, model_paths, just_cleared: bool) -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="Optiq Retail Analytics", layout="wide") # set page metadata
+    st.set_page_config(page_title="Optiq Retail Analytics", layout="wide")  # set page metadata
 
-    ensure_session_state() # initialize session state variables
-    render_intro() # display title and caption
-    _refresh_session_logs()
+    ensure_session_state()  # initialize session state variables
+    render_intro()  # display title and caption
+    _refresh_session_logs()     # load latest detection logs into session state
 
     sidebar = render_sidebar()
     model_paths = get_model_paths()
