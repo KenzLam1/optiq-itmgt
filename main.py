@@ -19,6 +19,7 @@ from video import prepare_video_source, run_analysis
 # Hardcoded values
 DEFAULT_FRAME_SKIP = 1  # Process every frame 
 DEFAULT_PREVIEW_STRIDE = 1  # Show every processed frame in the preview video
+DEFAULT_IMGSZ = 640  # Inference image size 
 
 # Pull latest detection logs from the database and store in session state
 def _refresh_session_logs() -> None:
@@ -61,7 +62,7 @@ def _execute_run(sidebar, model_paths) -> None:
                 enable_person_detector=sidebar.enable_person_detector,
                 age_conf=sidebar.age_conf,
                 person_conf=sidebar.person_conf,
-                imgsz=sidebar.imgsz,
+                imgsz=DEFAULT_IMGSZ,
             )
         device_summary = getattr(getattr(pipeline, "age_detector", None), "device", "unknown")
         st.caption(f"Models are running on: `{device_summary}`")

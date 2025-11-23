@@ -31,7 +31,6 @@ class SidebarConfig:
     enable_person_detector: bool
     age_conf: float
     person_conf: float
-    imgsz: int
     source_type: str
     uploaded_file: Optional[Any]
     file_path: str
@@ -88,7 +87,6 @@ def render_sidebar() -> SidebarConfig:
             st.error("Enable at least one detector to run analysis.")
         age_conf = st.slider("Age/Gender confidence", 0.05, 0.95, 0.40, 0.05)
         person_conf = st.slider("Person confidence", 0.05, 0.95, 0.35, 0.05)
-        imgsz = 640     # Hardcoded inference image size 
 
         st.header("Capture source")
         source_type = st.selectbox(
@@ -129,7 +127,6 @@ def render_sidebar() -> SidebarConfig:
         enable_person_detector=enable_person_detector,
         age_conf=age_conf,
         person_conf=person_conf,
-        imgsz=imgsz,
         source_type=source_type,
         uploaded_file=uploaded_file,
         file_path=file_path,
