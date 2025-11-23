@@ -11,7 +11,6 @@ import streamlit as st
 from config import AGE_GENDER_MODEL_PATH, PERSON_DETECTOR_MODEL_PATH
 from data_store import initialize_database, load_detection_logs
 from hardware import available_device_choices
-from streamlit_compat import call_with_width
 
 
 DEVICE_LABELS = {
@@ -299,7 +298,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["logged_at_local:T", "detections:Q"],
                 )
             )
-            call_with_width(st.altair_chart, traffic_chart)
+            st.altair_chart(traffic_chart, width="stretch")
 
     st.subheader("Detection Heatmap")
     heatmap_bins = st.slider("Heatmap granularity", min_value=5, max_value=30, value=10)
@@ -328,7 +327,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["x_bin:O", "y_bin:O", "count:Q"],
                 )
             )
-            call_with_width(st.altair_chart, heat_chart)
+            st.altair_chart(heat_chart, width="stretch")
 
     st.subheader("Age Distribution")
     age_df = filtered.dropna(subset=["age_estimate"])
@@ -357,7 +356,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["age_bucket:N", "count:Q"],
                 )
             )
-            call_with_width(st.altair_chart, age_chart)
+            st.altair_chart(age_chart, width="stretch")
 
     st.subheader("Gender Distribution")
     gender_counts = (
@@ -379,7 +378,7 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                 tooltip=["gender:N", "count:Q"],
             )
         )
-        call_with_width(st.altair_chart, gender_chart)
+        st.altair_chart(gender_chart, width="stretch")
 
 
 def render_detection_log_preview(
@@ -407,10 +406,10 @@ def render_detection_log_preview(
     logs = logs_df.copy() if logs_df is not None else load_detection_logs().copy()
     if logs.empty:
         if preview_image is not None:
-            call_with_width(
-                st.image,
+            st.image(
                 cv2.cvtColor(preview_image, cv2.COLOR_BGR2RGB),
                 caption="Most recent annotated frame",
+                width="stretch",
             )
         st.info("No detection logs recorded yet. Run an analysis to populate the dataset.")
         return
@@ -433,10 +432,10 @@ def render_detection_log_preview(
     )
 
     if preview_image is not None:
-        call_with_width(
-            st.image,
+        st.image(
             cv2.cvtColor(preview_image, cv2.COLOR_BGR2RGB),
             caption="Most recent annotated frame",
+            width="stretch",
         )
 
     metrics = st.columns(4)
@@ -468,7 +467,7 @@ def render_detection_log_preview(
     preview_df = run_logs[existing_cols].sort_values("logged_at", ascending=False).copy()
     if "logged_at" in preview_df.columns:
         preview_df["logged_at"] = preview_df["logged_at"].dt.tz_localize(None).dt.strftime("%Y-%m-%d %H:%M:%S")
-    call_with_width(st.dataframe, preview_df, hide_index=True)
+        st.dataframe(preview_df, hide_index=True, width="stretch")
 
     download_df = logs.copy()
     download_df["logged_at"] = download_df["logged_at"].dt.tz_localize(None)

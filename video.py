@@ -16,7 +16,6 @@ import numpy as np
 from data_store import append_detection_logs
 from detections import DetectionLogEntry, DetectionSnapshot
 from pipeline import VisionPipeline
-from streamlit_compat import call_with_width
 
 
 @dataclass
@@ -103,11 +102,11 @@ class AnalysisUI:
         if not force and processed_frames % self.preview_stride != 0:
             return
         rgb_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-        call_with_width(
-            self.frame_placeholder.image,
+        self.frame_placeholder.image(
             rgb_frame,
             caption=f"Frame {frame_idx}",
             channels="RGB",
+            width="stretch",
         )
 
     def update_progress(self, frame_idx: int, total_frames: Optional[int], processed_frames: int) -> None:
