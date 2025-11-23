@@ -72,8 +72,6 @@ def _execute_run(sidebar, model_paths) -> None:
         source, temp_file = prepare_video_source(
             source_type=sidebar.source_type,
             camera_index=int(sidebar.camera_index),
-            file_path=sidebar.file_path,
-            stream_url=sidebar.stream_url,
             uploaded_file=sidebar.uploaded_file,
         )
 

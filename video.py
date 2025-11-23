@@ -149,23 +149,10 @@ def _write_upload_to_temp(uploaded_file: Any) -> Path:
 def prepare_video_source(
     source_type: str,
     camera_index: int,
-    file_path: str,
-    stream_url: str,
     uploaded_file: Optional[Any],
 ) -> Tuple[Union[int, str], Optional[Path]]:
     if source_type == "Webcam":
         return camera_index, None
-
-    if source_type == "Video file (path)":
-        path = Path(file_path).expanduser()
-        if not path.exists():
-            raise RuntimeError(f"Video file not found: {path}")
-        return str(path), None
-
-    if source_type == "RTSP / CCTV":
-        if not stream_url:
-            raise RuntimeError("A valid RTSP / CCTV URL is required.")
-        return stream_url, None
 
     if uploaded_file is None:
         raise RuntimeError("Upload a video file before running analysis.")

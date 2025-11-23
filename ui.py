@@ -33,8 +33,6 @@ class SidebarConfig:
     person_conf: float
     source_type: str
     uploaded_file: Optional[Any]
-    file_path: str
-    stream_url: str
     camera_index: int
     run_clicked: bool
     stop_clicked: bool
@@ -96,8 +94,6 @@ def render_sidebar() -> SidebarConfig:
         )
         # Initialize variables with default values. Holds source-specific inputs
         uploaded_file = None    
-        file_path = ""
-        stream_url = ""
         camera_index = 0
 
         if source_type == "Upload video":
@@ -129,8 +125,6 @@ def render_sidebar() -> SidebarConfig:
         person_conf=person_conf,
         source_type=source_type,
         uploaded_file=uploaded_file,
-        file_path=file_path,
-        stream_url=stream_url,
         camera_index=camera_index,
         run_clicked=run_clicked,
         stop_clicked=stop_clicked,
