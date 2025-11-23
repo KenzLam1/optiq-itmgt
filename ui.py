@@ -111,17 +111,17 @@ def render_sidebar() -> SidebarConfig:
         stop_clicked = st.button("Stop analysis", type="secondary")
         clear_db_requested = st.button("⚠️ Clear detection logs", type="secondary", key="clear_logs_button")
         if clear_db_requested:
-            st.session_state.show_clear_prompt = True
+            st.session_state.show_clear_prompt = True   # Show confirmation prompt
 
         if st.session_state.get("show_clear_prompt"):
             st.warning("Clearing logs will delete all stored detections and analytics history.")
             confirm = st.button("Confirm clear", type="primary", key="confirm_clear_logs")
             cancel = st.button("Cancel", type="secondary", key="cancel_clear_logs")
             if confirm:
-                st.session_state.clear_confirmed = True
-                st.session_state.show_clear_prompt = False
+                st.session_state.clear_confirmed = True     # Set flag to confirm clearing logs
+                st.session_state.show_clear_prompt = False  # Hide the prompt after confirmation
             elif cancel:
-                st.session_state.show_clear_prompt = False
+                st.session_state.show_clear_prompt = False  # Hide the prompt if cancelled
 
     return SidebarConfig(
         device_choice=device_choice,
