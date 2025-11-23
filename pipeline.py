@@ -31,7 +31,7 @@ class VisionPipeline:
                 device=device,
                 conf_threshold=age_conf_threshold,
                 imgsz=imgsz,
-            )
+            ) #gets the variables of Age gender class
         self.person_detector: Optional[YOLOPersonDetector] = None
         if enable_person_detector:
             self.person_detector = YOLOPersonDetector(
@@ -39,30 +39,32 @@ class VisionPipeline:
                 device=device,
                 conf_threshold=person_conf_threshold,
                 imgsz=imgsz,
-            )
+            ) #gets the variables of Person class
         self.frame_interval = 1
-        self._box_annotator = sv.BoxAnnotator(color_lookup=sv.ColorLookup.INDEX)
-        self._label_annotator = sv.LabelAnnotator(color_lookup=sv.ColorLookup.INDEX)
+        self._box_annotator = sv.BoxAnnotator(color_lookup=sv.ColorLookup.INDEX) #creates the bounding box given the color of that id
+        self._label_annotator = sv.LabelAnnotator(color_lookup=sv.ColorLookup.INDEX) #same but for labels
 
     def set_frame_interval(self, interval: int) -> None:
-        self.frame_interval = max(1, interval)
+        self.frame_interval = max(1, interval) #gets the most recent frame given the interval
 
     def process(self, frame: np.ndarray, frame_idx: int) -> Tuple[np.ndarray, List[DetectionResult]]:
         if frame_idx % self.frame_interval != 0:
-            return frame, []
+            return frame, [] #to check which frames to take / not skip
 
         if self.age_detector is None and self.person_detector is None:
-            return frame, []
-
+            return frame, [] # if there is no detections return []
+        """The prior 2 are checkers for frame skipping and Truthyness"""
         age_detections: List[DetectionResult] = []
         if self.age_detector is not None:
-            age_detections = self.age_detector.predict(frame)
+            age_detections = self.age_detector.predict(frame) #run predict func from models when there is detections
+
         person_detections: List[DetectionResult] = []
         if self.person_detector is not None:
-            person_detections = self.person_detector.predict(frame)
+            person_detections = self.person_detector.predict(frame) #same
+
         detections: List[DetectionResult] = []
         if age_detections:
-            detections.extend(age_detections)
+            detections.extend(age_detections) #adds age_detections to detection list one by one
 
         filtered_person_detections = self._filter_overlap(
             person_detections, age_detections, iou_threshold=0.35
@@ -91,11 +93,11 @@ class VisionPipeline:
         if not person_detections:
             return []
         if not age_detections:
-            return person_detections
+            return person_detections #returns to person_detections
 
-        person_boxes = self._results_to_sv_detections(person_detections).xyxy
-        age_boxes = self._results_to_sv_detections(age_detections).xyxy
-        iou_matrix = self._pairwise_iou(person_boxes, age_boxes)
+        person_boxes = self._results_to_sv_detections(person_detections).xyxy #fixes coords
+        age_boxes = self._results_to_sv_detections(age_detections).xyxy #fixes coords
+        iou_matrix = self._pairwise_iou(person_boxes, age_boxes) 
         suppress_mask = (iou_matrix.max(axis=1) <= iou_threshold) if iou_matrix.size else np.ones(len(person_detections), dtype=bool)
 
         return [
@@ -103,7 +105,7 @@ class VisionPipeline:
         ]
 
     @staticmethod
-    def _pairwise_iou(
+    def _pairwise_iou( #solves IOU, sees if both models see the same thing 
         boxes_a: np.ndarray,
         boxes_b: np.ndarray,
     ) -> np.ndarray:
@@ -111,6 +113,7 @@ class VisionPipeline:
             return np.zeros((boxes_a.shape[0], boxes_b.shape[0]), dtype=np.float32)
 
         ax1, ay1, ax2, ay2 = boxes_a[:, 0][:, None], boxes_a[:, 1][:, None], boxes_a[:, 2][:, None], boxes_a[:, 3][:, None]
+
         bx1, by1, bx2, by2 = boxes_b[:, 0][None, :], boxes_b[:, 1][None, :], boxes_b[:, 2][None, :], boxes_b[:, 3][None, :]
 
         inter_x1 = np.maximum(ax1, bx1)
@@ -134,19 +137,19 @@ class VisionPipeline:
             return sv.Detections(
                 xyxy=np.empty((0, 4), dtype=np.float32),
                 confidence=np.empty((0,), dtype=np.float32),
-            )
+            ) #if nothing in results puts empty functions in detections
 
         xyxy: List[List[float]] = []
         confidences: List[float] = []
         for det in results:
             x, y, w, h = det.bbox
-            xyxy.append([x, y, x + w, y + h])
+            xyxy.append([x, y, x + w, y + h]) #appends sv readable coords (x1,y1,x2,y2)
             confidences.append(det.confidence)
 
         return sv.Detections(
             xyxy=np.array(xyxy, dtype=np.float32),
             confidence=np.array(confidences, dtype=np.float32),
-        )
+        ) #puts correct coords and conf back
 
     @staticmethod
     def _format_label(detection: DetectionResult) -> str:
