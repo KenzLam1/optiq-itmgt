@@ -130,15 +130,10 @@ def render_sidebar() -> SidebarConfig:
         clear_db_requested=clear_db_requested,
     )
 
-
-def _normalize_date_input(selection: Union[dt.date, List[dt.date], tuple]) -> tuple[dt.date, dt.date]:
+"""Returns a consistent tuple of start and end date range from various input formats."""
+def _normalize_date_input(selection: dt.date | tuple[dt.date, dt.date]) -> tuple[dt.date, dt.date]:
     if isinstance(selection, tuple):
         if len(selection) == 2:
-            return selection[0], selection[1]
-        if len(selection) == 1:
-            return selection[0], selection[0]
-    if isinstance(selection, list):
-        if len(selection) >= 2:
             return selection[0], selection[1]
         if len(selection) == 1:
             return selection[0], selection[0]
