@@ -68,7 +68,7 @@ class VisionPipeline:
 
         filtered_person_detections = self._filter_overlap(
             person_detections, age_detections, iou_threshold=0.35
-        ) #gets the person detections that dont overlap too much with the age detections
+        ) #gets the person detections with little overlap with the age detections
         detections.extend(filtered_person_detections) #adds person detections with little overlap
 
         annotated = frame.copy() #is used to show the new annotated frame
@@ -83,7 +83,7 @@ class VisionPipeline:
                 scene=annotated, detections=sv_detections, labels=labels
             ) #draws labels of bounding box
 
-        return annotated, detections #returns the needed data for display
+        return annotated, detections #returns the needed data for display (annotated boxes =display , detection data bbox= confidence= ...)
 
     def _filter_overlap( #if the entire person and age box detection is mainly the face, takeout person box detection
         self, 
