@@ -41,7 +41,7 @@ class VisionPipeline:
                 imgsz=imgsz,
             ) #gets the variables of Person class
         self.frame_interval = 1
-        self._box_annotator = sv.BoxAnnotator(color_lookup=sv.ColorLookup.INDEX) #creates the bounding box given the color of that id
+        self._box_annotator = sv.BoxAnnotator(color_lookup=sv.ColorLookup.INDEX) #is the bounding box given the color of that id
         self._label_annotator = sv.LabelAnnotator(color_lookup=sv.ColorLookup.INDEX) #same but for labels
 
     def set_frame_interval(self, interval: int) -> None:
@@ -68,24 +68,25 @@ class VisionPipeline:
 
         filtered_person_detections = self._filter_overlap(
             person_detections, age_detections, iou_threshold=0.35
-        )
-        detections.extend(filtered_person_detections)
+        ) #gets the person detections that dont overlap too much with the age detections
+        detections.extend(filtered_person_detections) #adds person detections with little overlap
 
-        annotated = frame.copy()
+        annotated = frame.copy() #is used to show the new annotated frame
         if detections:
-            sv_detections = self._results_to_sv_detections(detections)
-            labels = [self._format_label(det) for det in detections]
+            sv_detections = self._results_to_sv_detections(detections) #gets correct coords
+            labels = [self._format_label(det) for det in detections] #returns the correct labels ie. if age is detected or not
             annotated = self._box_annotator.annotate(
-                scene=annotated, detections=sv_detections
-            )
+                scene=annotated #this is the image being processed
+                , detections=sv_detections #coords of box
+            ) #draws bounding box using the .annotate function from sv
             annotated = self._label_annotator.annotate(
                 scene=annotated, detections=sv_detections, labels=labels
-            )
+            ) #draws labels of bounding box
 
-        return annotated, detections
+        return annotated, detections #returns the needed data for display
 
-    def _filter_overlap(
-        self,
+    def _filter_overlap( #if the entire person and age box detection is mainly the face, takeout person box detection
+        self, 
         person_detections: List[DetectionResult],
         age_detections: List[DetectionResult],
         iou_threshold: float,
@@ -99,10 +100,10 @@ class VisionPipeline:
         age_boxes = self._results_to_sv_detections(age_detections).xyxy #fixes coords
         iou_matrix = self._pairwise_iou(person_boxes, age_boxes) 
         suppress_mask = (iou_matrix.max(axis=1) <= iou_threshold) if iou_matrix.size else np.ones(len(person_detections), dtype=bool)
-
+        #checks which to keep depending on if the age detection box is too small
         return [
             det for det, keep in zip(person_detections, suppress_mask) if keep
-        ]
+        ]# keeps the valid IOU (not just faces)
 
     @staticmethod
     def _pairwise_iou( #solves IOU, sees if both models see the same thing 
@@ -154,9 +155,9 @@ class VisionPipeline:
     @staticmethod
     def _format_label(detection: DetectionResult) -> str:
         primary_label: Optional[str] = None
-        if detection.gender_label and detection.age_range:
+        if detection.gender_label and detection.age_range: #if age detection is there format as:
             primary_label = f"{detection.gender_label} ({detection.age_range})"
-        elif detection.class_label:
+        elif detection.class_label: #if instead person detection is only one seen get the label for detection, normally "person"
             label = detection.class_label
             if isinstance(label, str):
                 primary_label = label.title()
@@ -164,13 +165,13 @@ class VisionPipeline:
             primary_label = "Person"
 
         if primary_label is None:
-            primary_label = "Person"
+            primary_label = "Person" #WE CAN PROLLY JUST TAKE OUT ALL THIS STUFF CUS ITS ALWAYS PERSON
 
-        confidence_pct = f"{detection.confidence * 100:0.0f}%"
-        return f"{primary_label} {confidence_pct}".strip()
+        confidence_pct = f"{detection.confidence * 100:0.0f}%" #formats confidence nicely
+        return f"{primary_label} {confidence_pct}".strip() 
 
 
-@st.cache_resource(show_spinner=False)
+@st.cache_resource(show_spinner=False) #makes sure models are only ran once
 def load_pipeline(
     age_model_path: str,
     person_model_path: str,
