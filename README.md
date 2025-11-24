@@ -6,12 +6,11 @@ Optiq Retail Analytics now ships as a Streamlit dashboard that detects shoppers 
 
 1. Install Python 3.9 or newer.
 2. Install the project dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+  
+   a. pip install -r requirements.txt
+   b. Install pytorch CUDA enabled or MPS supported depending on your OS
+ 
 3. Place the model weights (`age-gender_detector.pt` and `person_detector.pt`) alongside `main.py`.
-
-> PyTorch automatically uses CUDA or Apple Silicon (MPS) when available; otherwise, it falls back to CPU execution. You can also override the device from the sidebar selector (for example, pick **Apple Silicon (MPS)** on macOS to boost FPS).
 
 ## Running the dashboard
 
@@ -26,9 +25,7 @@ Your browser will open to `http://localhost:8501`. Use the sidebar to select the
 ### Capture modes
 
 - **Upload video** – upload an MP4/MOV/AVI/MKV clip directly from the browser.
-- **Webcam** – process frames from a locally connected camera (indexed via OpenCV).
-- **Video file (path)** – provide a path on disk that the server process can read.
-- **RTSP / CCTV** – analyse frames from a network camera or NVR stream.
+- **Webcam** – process frames from a locally connected camera.
 
 The `Max frames to analyse` control limits how many frames are processed per run, which keeps long-running streams manageable.
 
@@ -44,8 +41,7 @@ After each run the dashboard surfaces:
 ## Troubleshooting
 
 - If the page reports missing weights, verify both `.pt` files exist next to `main.py` or provide absolute paths in the sidebar.
-- For RTSP/Webcam sources, ensure the Streamlit process has permission to access the device or network.
-- When processing large files, increase `Frame skip` to reduce load.
+- For Webcam sources, ensure the Streamlit process has permission to access the device or network.
 - Use the **Run age/gender detector** and **Run person detector** toggles to keep only the model(s) you need; disabling one frees compute, but keep at least one enabled before running analysis.
 - Uploaded videos are written to a temporary file during the session and deleted once processing completes.
 

@@ -9,7 +9,7 @@ except Exception:  # noqa: BLE001
 
 
 def select_runtime_device(explicit_device: Optional[str] = None) -> str:
-    """Resolve the best device for Ultralytics models."""
+    """Picks the best device for Ultralytics models."""
     if explicit_device:
         return explicit_device
 
@@ -18,7 +18,7 @@ def select_runtime_device(explicit_device: Optional[str] = None) -> str:
 
     try:
         if torch.cuda.is_available():
-            return "cuda:0"
+            return "cuda:0"     # means "first GPU" in pytorch
     except Exception:  # noqa: BLE001
         pass
 
@@ -33,17 +33,17 @@ def select_runtime_device(explicit_device: Optional[str] = None) -> str:
 
 
 def resolve_user_device_choice(choice: str) -> Optional[str]:
-    """Map sidebar device choices to runtime device identifiers."""
-    normalized = choice.lower()
+    """Maps sidebar device choices to device identifiers that the code understands."""
+    normalized = choice.lower()    # makes the function case-insensitive
     if normalized == "auto":
-        return None
+        return None         # lets select_runtime_device pick the best device
     if normalized == "cuda":
-        return "cuda:0"
+        return "cuda:0"   # means "first GPU" in pytorch
     return normalized
 
 
 def available_device_choices() -> tuple[list[str], bool]:
-    """Return supported sidebar device options and MPS availability."""
+    """Return supported sidebar device options."""
     options: list[str] = ["auto", "cpu"]
     mps_available = False
 
