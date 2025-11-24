@@ -200,20 +200,20 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
         st.info("No detection logs available yet. Run an analysis to populate the dataset.")
         return
 
-    df["logged_at_local"] = df["logged_at"].dt.tz_localize(None)
-    df["date"] = df["logged_at_local"].dt.date
-    df["minutes"] = df["logged_at_local"].dt.hour * 60 + df["logged_at_local"].dt.minute
-    df["gender"] = df["gender"].fillna("Unknown")
-    df["age_estimate"] = pd.to_numeric(df["age_estimate"], errors="coerce")
+    df["logged_at_local"] = df["logged_at"].dt.tz_localize(None)    # Remove timezone info for local time operations
+    df["date"] = df["logged_at_local"].dt.date  # Extract date part for date filtering
+    df["minutes"] = df["logged_at_local"].dt.hour * 60 + df["logged_at_local"].dt.minute    # Extract total minutes for time filtering
+    df["gender"] = df["gender"].fillna("Unknown")   # Repalce missing genders with "Unknown"
+    df["age_estimate"] = pd.to_numeric(df["age_estimate"], errors="coerce") #Ensure age_estimate is numeric, errors become NaN
 
+    # Prepare filter values
     min_date = df["date"].min()
     max_date = df["date"].max()
-    date_default = (min_date, max_date) if min_date != max_date else (min_date, max_date)
-
-    gender_options = sorted(df["gender"].unique().tolist())
+    date_default = (min_date, max_date) 
+    gender_options = sorted(df["gender"].unique().tolist()) # Get unique genders from the data and sort them alphabetically
     min_age, max_age = _compute_age_range(df)
     overall_min_age = 0
-    overall_max_age = max(100, max_age)
+    overall_max_age = max(100, max_age)     # at least 100 
 
     with st.expander("Filters", expanded=True):
         date_selection = st.date_input(
@@ -233,12 +233,12 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
         selected_genders = st.multiselect(
             "Gender",
             options=gender_options,
-            default=gender_options,
+            default=gender_options,     # Marks all gender options as selected by default
         )
 
         age_selection = st.slider(
             "Age range",
-            min_value=overall_min_age,
+            min_value=overall_min_age,  
             max_value=overall_max_age,
             value=(min_age, min(max_age, overall_max_age)),
         )
@@ -263,38 +263,38 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
         "1H": "Hourly",
         "1D": "Daily",
     }
-    interval_keys = list(interval_labels.keys())
+    interval_keys = list(interval_labels.keys())    
     interval_choice = st.selectbox(
         "Aggregation interval",
         options=interval_keys,
-        format_func=lambda key: interval_labels[key],
+        format_func=lambda key: interval_labels[key],   # Use user-friendly labels
         index=1,
     )
 
     if filtered.empty:
         st.info("No detections match the selected filters.")
     else:
-        traffic = (
-            filtered.set_index("logged_at_local")
-            .resample(interval_choice)
-            .size()
-            .reset_index(name="detections")
+        traffic = (     # Creates a 2 column DataFrame with counts of detections per selected interval
+            filtered.set_index("logged_at_local")   # Set timestamp as index for resampling. Timestamp is no longer a column.
+            .resample(interval_choice)  # Resample by the selected interval (e.g. 5 minute buckets if "5min" selected)
+            .size() # Count number of detections in each interval. Returns a series with timestamp index and counts as values.
+            .reset_index(name="detections") # Turn the series back into a normal df. Counts are named "detections".
         )
         if traffic["detections"].sum() == 0:
             st.info("No detections found for the selected interval.")
         else:
             traffic_chart = (
-                alt.Chart(traffic)
-                .mark_line(point=True)
+                alt.Chart(traffic)  # Create Altair chart from the traffic DataFrame
+                .mark_line(point=True) # Draw a line with points at each data point
                 .encode(
-                    x=alt.X("logged_at_local:T", title="Timestamp"),
-                    y=alt.Y("detections:Q", title="Detections"),
-                    tooltip=["logged_at_local:T", "detections:Q"],
+                    x=alt.X("logged_at_local:T", title="Timestamp"),    # X axis is the timestamp. This is a time value.
+                    y=alt.Y("detections:Q", title="Detections"), # Y axis is the count of detections. This is a quantitative value.
+                    tooltip=["logged_at_local:T", "detections:Q"],      # Tooltip shows timestamp and count when hovering
                 )
             )
-            st.altair_chart(traffic_chart, width="stretch")
-
-    st.subheader("Detection Heatmap")
+            st.altair_chart(traffic_chart, width="stretch") 
+    
+    st.subheader("Detection Heatmap")# DELETE THISSHIT ....
     heatmap_bins = st.slider("Heatmap granularity", min_value=5, max_value=30, value=10)
     heat_df = filtered.dropna(subset=["center_x", "center_y"])
     if heat_df.empty:
@@ -321,21 +321,21 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                     tooltip=["x_bin:O", "y_bin:O", "count:Q"],
                 )
             )
-            st.altair_chart(heat_chart, width="stretch")
+            st.altair_chart(heat_chart, width="stretch") # .....DELETE THISSHIT
 
     st.subheader("Age Distribution")
-    age_df = filtered.dropna(subset=["age_estimate"])
+    age_df = filtered.dropna(subset=["age_estimate"])   
     if age_df.empty:
         st.info("No age data available after applying the filters.")
     else:
-        bins = [0, 13, 18, 25, 35, 45, 55, 65, 200]
-        labels = ["0-12", "13-17", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"]
+        bins = [0, 13, 18, 25, 35, 45, 55, 65, 200] # Define age buckets
+        labels = ["0-12", "13-17", "18-24", "25-34", "35-44", "45-54", "55-64", "65+"]  # how each age buckets are displayed
         age_df = age_df.copy()
-        age_df["age_bucket"] = pd.cut(age_df["age_estimate"], bins=bins, labels=labels, right=False)
+        age_df["age_bucket"] = pd.cut(age_df["age_estimate"], bins=bins, labels=labels, right=False)    # Take age_estimate and assign to age_bucket based on defined bins. Left side is inclusive and right side is exclusive.
         age_counts = (
-            age_df.groupby("age_bucket", observed=False)
-            .size()
-            .reset_index(name="count")
+            age_df.groupby("age_bucket", observed=False)    # Group by age_bucket. observed=False ensures all categories are included even if count is 0
+            .size() # Count number of detections in each age bucket
+            .reset_index(name="count") # Turn the series back into a normal df. Counts are named "count".
         )
         age_counts = age_counts[age_counts["count"] > 0]
         if age_counts.empty:
