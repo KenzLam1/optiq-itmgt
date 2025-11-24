@@ -185,11 +185,9 @@ def _apply_filters(
         return filtered.iloc[0:0]   # Return empty dataframe if no genders selected
     filtered = filtered[filtered["gender"].isin(genders)]
 
-    if not include_unknown_age:
-        filtered = filtered[filtered["age_estimate"].notna()]   # Exclude unknown ages if requested
-
-    age_mask = filtered["age_estimate"].between(min_age, max_age) | filtered["age_estimate"].isna()
-    if not include_unknown_age:
+    if include_unknown_age:
+        age_mask = filtered["age_estimate"].between(min_age, max_age) | filtered["age_estimate"].isna()
+    else:
         age_mask = filtered["age_estimate"].between(min_age, max_age)
     filtered = filtered[age_mask]
 
