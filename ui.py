@@ -390,19 +390,10 @@ def render_detection_log_preview(
     logs_df: Optional[pd.DataFrame] = None,
 ) -> None:
     st.subheader("Latest Detections Preview")
-    # Fill in missing parameters from session state if not provided. Ensures preview works even if some values are none.
-    session_summary = st.session_state.get("last_run_summary") 
-    if run_id is None and session_summary:      
-        run_id = session_summary.get("run_id")
-    if preview_image is None:
-        preview_image = st.session_state.get("last_preview_image")
-    if processed_frames is None and session_summary:
-        processed_frames = session_summary.get("processed_frames")
-    if fps is None and session_summary:
-        fps = session_summary.get("fps")
-    if elapsed is None and session_summary:
-        elapsed = session_summary.get("elapsed")
-
+    # Load session state values for later use
+    session_summary = st.session_state.get("last_run_summary") or {}    #uses empty dict if no summary yet
+    last_preview_image = st.session_state.get("last_preview_image")
+    
     # Use provided logs_df or load from data store if not provided. Makes a copy to avoid modifications.
     logs = logs_df.copy() if logs_df is not None else load_detection_logs().copy()
     if logs.empty:  
@@ -410,19 +401,22 @@ def render_detection_log_preview(
         return  #Early exit if no logs available
 
     logs = logs.sort_values("logged_at")    #Sort logs by timestamp
-    
-    selected_run_id = run_id if run_id in logs["run_id"].values else None   # assigned to run id only if it exists in logs
-    if selected_run_id is None: 
-        selected_run_id = logs.iloc[-1]["run_id"]   #Default to the most recent run ID if none selected or invalid
-  
-   #If session summary exists and run ID matches the session summary, fill in missing values. 
-    if session_summary and session_summary.get("run_id") == selected_run_id:   
-        processed_frames = processed_frames or session_summary.get("processed_frames")
-        fps = fps or session_summary.get("fps")
-        elapsed = elapsed or session_summary.get("elapsed")         #WHY DO WE FILL IN THESE VALUES MULTIPLE TIMES*********
 
-    run_logs = logs[logs["run_id"] == selected_run_id].copy()
-    run_logs["logged_at_display"] = run_logs["logged_at"].dt.tz_localize(None)
+    # Decide run ID
+    selected_run_id = run_id or session_summary.get("run_id") or logs.iloc[-1]["run_id"]
+  
+   #If session summary exists and run ID matches the session summary, fill in values if missing. 
+    if session_summary.get("run_id") == selected_run_id:
+        if preview_image is None:
+            preview_image = last_preview_image
+        if processed_frames is None:
+            processed_frames = session_summary.get("processed_frames")
+        if fps is None:
+            fps = session_summary.get("fps")
+        if elapsed is None:
+            elapsed = session_summary.get("elapsed")
+
+    run_logs = logs[logs["run_id"] == selected_run_id].copy()   # subset of the full logs for the selected run ID 
 
     total_runs = logs["run_id"].nunique()
     st.caption(
