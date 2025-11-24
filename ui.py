@@ -333,28 +333,27 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
         age_df = age_df.copy()
         age_df["age_bucket"] = pd.cut(age_df["age_estimate"], bins=bins, labels=labels, right=False)    # Take age_estimate and assign to age_bucket based on defined bins. Left side is inclusive and right side is exclusive.
         age_counts = (
-            age_df.groupby("age_bucket", observed=False)    # Group by age_bucket. observed=False ensures all categories are included even if count is 0
+            age_df.groupby("age_bucket", observed=True)   # Group by age bucket and only include buckets that count > 0
             .size() # Count number of detections in each age bucket
             .reset_index(name="count") # Turn the series back into a normal df. Counts are named "count".
         )
-        age_counts = age_counts[age_counts["count"] > 0]
         if age_counts.empty:
             st.info("No age buckets to display.")
         else:
             age_chart = (
-                alt.Chart(age_counts)
-                .mark_arc()
-                .encode(
-                    theta=alt.Theta("count:Q", title="Detections"),
-                    color=alt.Color("age_bucket:N", title="Age bucket"),
-                    tooltip=["age_bucket:N", "count:Q"],
+                alt.Chart(age_counts) # Create Altair chart from the age_counts DataFrame
+                .mark_arc() # Draw a pie chart
+                .encode( 
+                    theta=alt.Theta("count:Q", title="Detections"), # Angle (size) of each slice is based on count of detections. Quantitative data.
+                    color=alt.Color("age_bucket:N", title="Age bucket"), # Color of each slice is based on age bucket. Nominal data.
+                    tooltip=["age_bucket:N", "count:Q"],   # Tooltip shows age bucket and count when hovering.
                 )
             )
             st.altair_chart(age_chart, width="stretch")
 
     st.subheader("Gender Distribution")
     gender_counts = (
-        filtered.assign(gender=filtered["gender"].fillna("Unknown"))
+        filtered.assign(gender=filtered["gender"].fillna("Unknown")) 
         .groupby("gender")
         .size()
         .reset_index(name="count")
