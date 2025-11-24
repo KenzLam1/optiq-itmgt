@@ -418,7 +418,7 @@ def render_detection_log_preview(
 
     run_logs = logs[logs["run_id"] == selected_run_id].copy()   # subset of the full logs for the selected run ID 
 
-    total_runs = logs["run_id"].nunique()
+    total_runs = logs["run_id"].nunique() # total number of unique run IDs in the logs
     st.caption(
         f"Displaying {len(run_logs)} detection(s) for run `{selected_run_id}` "
         f"(total logged runs: {total_runs})."
@@ -453,13 +453,11 @@ def render_detection_log_preview(
         "age_range",
         "age_estimate",
         "confidence",
-        "frame_idx",
-        "processed_frame",
     ]
-    existing_cols = [col for col in display_cols if col in run_logs.columns]
-    preview_df = run_logs[existing_cols].sort_values("logged_at", ascending=False).copy()
-    if "logged_at" in preview_df.columns:
-        preview_df["logged_at"] = preview_df["logged_at"].dt.tz_localize(None).dt.strftime("%Y-%m-%d %H:%M:%S")
+    existing_cols = [col for col in display_cols if col in run_logs.columns]    #Only include columns that exist in the DataFrame
+    preview_df = run_logs[existing_cols].sort_values("logged_at", ascending=False).copy()   #Sort by timestamp descending
+    if "logged_at" in preview_df.columns:   
+        preview_df["logged_at"] = preview_df["logged_at"].dt.tz_localize(None).dt.strftime("%Y-%m-%d %H:%M:%S") #Format timestamp to plain string for better readability
         st.dataframe(preview_df, hide_index=True, width="stretch")
 
     download_df = logs.copy()
