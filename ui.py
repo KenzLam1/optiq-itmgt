@@ -390,48 +390,41 @@ def render_detection_log_preview(
     logs_df: Optional[pd.DataFrame] = None,
 ) -> None:
     st.subheader("Latest Detections Preview")
-    # Fill in missing parameters from session state if not provided. Ensures preview works even if called without all args.
-    session_summary = st.session_state.get("last_run_summary") 
-    if run_id is None and session_summary:      
-        run_id = session_summary.get("run_id")
-    if preview_image is None:
-        preview_image = st.session_state.get("last_preview_image")
-    if processed_frames is None and session_summary:
-        processed_frames = session_summary.get("processed_frames")
-    if fps is None and session_summary:
-        fps = session_summary.get("fps")
-    if elapsed is None and session_summary:
-        elapsed = session_summary.get("elapsed")
+    # Load session state values for later use
+    session_summary = st.session_state.get("last_run_summary") or {}    #uses empty dict if no summary yet
+    last_preview_image = st.session_state.get("last_preview_image")
+    
     # Use provided logs_df or load from data store if not provided. Makes a copy to avoid modifications.
     logs = logs_df.copy() if logs_df is not None else load_detection_logs().copy()
-    if logs.empty:
-        if preview_image is not None:
-            st.image(
-                cv2.cvtColor(preview_image, cv2.COLOR_BGR2RGB),
-                caption="Most recent annotated frame",
-                width="stretch",
-            )
+    if logs.empty:  
         st.info("No detection logs recorded yet. Run an analysis to populate the dataset.")
-        return
+        return  #Early exit if no logs available
 
-    logs = logs.sort_values("logged_at")
-    selected_run_id = run_id if run_id in logs["run_id"].values else None
-    if selected_run_id is None:
-        selected_run_id = logs.iloc[-1]["run_id"]
-    if session_summary and session_summary.get("run_id") == selected_run_id:
-        processed_frames = processed_frames or session_summary.get("processed_frames")
-        fps = fps or session_summary.get("fps")
-        elapsed = elapsed or session_summary.get("elapsed")
-    run_logs = logs[logs["run_id"] == selected_run_id].copy()
-    run_logs["logged_at_display"] = run_logs["logged_at"].dt.tz_localize(None)
+    logs = logs.sort_values("logged_at")    #Sort logs by timestamp
 
-    total_runs = logs["run_id"].nunique()
+    # Decide run ID
+    selected_run_id = run_id or session_summary.get("run_id") or logs.iloc[-1]["run_id"]
+  
+   #If session summary exists and run ID matches the session summary, fill in values if missing. 
+    if session_summary.get("run_id") == selected_run_id:
+        if preview_image is None:
+            preview_image = last_preview_image
+        if processed_frames is None:
+            processed_frames = session_summary.get("processed_frames")
+        if fps is None:
+            fps = session_summary.get("fps")
+        if elapsed is None:
+            elapsed = session_summary.get("elapsed")
+
+    run_logs = logs[logs["run_id"] == selected_run_id].copy()   # subset of the full logs for the selected run ID 
+
+    total_runs = logs["run_id"].nunique() # total number of unique run IDs in the logs
     st.caption(
         f"Displaying {len(run_logs)} detection(s) for run `{selected_run_id}` "
         f"(total logged runs: {total_runs})."
     )
 
-    if preview_image is not None:
+    if preview_image is not None: 
         st.image(
             cv2.cvtColor(preview_image, cv2.COLOR_BGR2RGB),
             caption="Most recent annotated frame",
@@ -460,13 +453,11 @@ def render_detection_log_preview(
         "age_range",
         "age_estimate",
         "confidence",
-        "frame_idx",
-        "processed_frame",
     ]
-    existing_cols = [col for col in display_cols if col in run_logs.columns]
-    preview_df = run_logs[existing_cols].sort_values("logged_at", ascending=False).copy()
-    if "logged_at" in preview_df.columns:
-        preview_df["logged_at"] = preview_df["logged_at"].dt.tz_localize(None).dt.strftime("%Y-%m-%d %H:%M:%S")
+    existing_cols = [col for col in display_cols if col in run_logs.columns]    #Only include columns that exist in the DataFrame
+    preview_df = run_logs[existing_cols].sort_values("logged_at", ascending=False).copy()   #Sort by timestamp descending
+    if "logged_at" in preview_df.columns:   
+        preview_df["logged_at"] = preview_df["logged_at"].dt.tz_localize(None).dt.strftime("%Y-%m-%d %H:%M:%S") #Format timestamp to plain string for better readability
         st.dataframe(preview_df, hide_index=True, width="stretch")
 
     download_df = logs.copy()
