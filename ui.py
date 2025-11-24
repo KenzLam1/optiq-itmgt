@@ -353,22 +353,21 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
 
     st.subheader("Gender Distribution")
     gender_counts = (
-        filtered.assign(gender=filtered["gender"].fillna("Unknown")) 
-        .groupby("gender")
-        .size()
-        .reset_index(name="count")
+        filtered[filtered["gender"] != "Unknown"] # Exclude "Unknown" genders   
+        .groupby("gender")  # Group by gender 
+        .size() # Count number of detections per gender
+        .reset_index(name="count") # Turn the series back into a normal df. Counts are named "count".
     )
-    gender_counts = gender_counts[gender_counts["count"] > 0]
-    if gender_counts.empty:
+    if gender_counts.empty: 
         st.info("No gender data available after applying the filters.")
     else:
         gender_chart = (
-            alt.Chart(gender_counts)
-            .mark_arc()
+            alt.Chart(gender_counts) # Create Altair chart from the gender_counts DataFrame
+            .mark_arc() # Draw a pie chart
             .encode(
-                theta=alt.Theta("count:Q", title="Detections"),
-                color=alt.Color("gender:N", title="Gender"),
-                tooltip=["gender:N", "count:Q"],
+                theta=alt.Theta("count:Q", title="Detections"), # Angle (size) of each slice is based on count of detections. Quantitative data.
+                color=alt.Color("gender:N", title="Gender"), # Color of each slice is based on gender. Nominal data.
+                tooltip=["gender:N", "count:Q"],  # Tooltip shows gender and count when hovering.
             )
         )
         st.altair_chart(gender_chart, width="stretch")
