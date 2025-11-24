@@ -139,16 +139,16 @@ def _normalize_date_input(selection: dt.date | tuple[dt.date, dt.date]) -> tuple
             return selection[0], selection[0]
     return selection, selection
 
-
+"""Computes age range for default behavior of age range filter"""
 def _compute_age_range(df: pd.DataFrame) -> tuple[int, int]:
     valid_ages = df["age_estimate"].dropna()
-    if valid_ages.empty:
+    if valid_ages.empty:    # no age data 
         return 0, 100
     min_age = int(np.floor(valid_ages.min()))
     max_age = int(np.ceil(valid_ages.max()))
-    return max(0, min_age), max(10, max_age)
+    return max(0, min_age), max(10, max_age) # Returns min and max age. Min age is at least 0, max age is at least 10
 
-
+"""Takes in the full detection logs DataFrame and applies the user specified filters, returning the filtered DataFrame."""
 def _apply_filters(
     df: pd.DataFrame,
     date_range: tuple[dt.date, dt.date],
@@ -161,31 +161,32 @@ def _apply_filters(
         return df
 
     start_date, end_date = date_range
-    start_minutes = time_range[0].hour * 60 + time_range[0].minute
-    end_minutes = time_range[1].hour * 60 + time_range[1].minute
+    start_minutes = time_range[0].hour * 60 + time_range[0].minute  #Convert start time to total minutes
+    end_minutes = time_range[1].hour * 60 + time_range[1].minute    #Convert end time to total minutes
     min_age, max_age = age_bounds
 
-    filtered = df[
+    filtered = df[      # Filter by date range
         (df["date"] >= start_date)
         & (df["date"] <= end_date)
     ].copy()
 
     if filtered.empty:
-        return filtered
-
+        return filtered # Return empty DataFrame if no data after date filtering
+    
+        # Normal case
     if start_minutes <= end_minutes:
         time_mask = (filtered["minutes"] >= start_minutes) & (filtered["minutes"] <= end_minutes)
     else:
-        # Wrap-around (e.g. 20:00 to 02:00)
+        # Wrap-around case (e.g. 20:00 to 02:00)
         time_mask = (filtered["minutes"] >= start_minutes) | (filtered["minutes"] <= end_minutes)
     filtered = filtered[time_mask]
 
     if not genders:
-        return filtered.iloc[0:0]
+        return filtered.iloc[0:0]   # Return empty dataframe if no genders selected
     filtered = filtered[filtered["gender"].isin(genders)]
 
     if not include_unknown_age:
-        filtered = filtered[filtered["age_estimate"].notna()]
+        filtered = filtered[filtered["age_estimate"].notna()]   # Exclude unknown ages if requested
 
     age_mask = filtered["age_estimate"].between(min_age, max_age) | filtered["age_estimate"].isna()
     if not include_unknown_age:
