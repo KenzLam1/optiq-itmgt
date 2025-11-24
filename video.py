@@ -108,6 +108,7 @@ class AnalysisUI:
             channels="RGB",
             width="stretch",
         )
+        
 
     def update_progress(self, frame_idx: int, total_frames: Optional[int], processed_frames: int) -> None:
         if total_frames:
