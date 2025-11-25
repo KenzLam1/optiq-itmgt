@@ -47,10 +47,10 @@ def _update_stop_flags(run_clicked: bool, stop_clicked: bool) -> None:
 
 
 def _execute_run(sidebar, model_paths) -> None:
-    temp_file: Optional[Path] = None
+    temp_file: Optional[Path] = None    # Temporary file path for uploaded video, if any
     progress_bar = st.progress(0, text="Initialising stream...")
-    frame_placeholder = st.empty()
-    status_placeholder = st.empty()
+    frame_placeholder = st.empty()  # Placeholder for displaying video frames
+    status_placeholder = st.empty() # Placeholder for displaying status messages
 
     try:
         with st.spinner("Loading detection models..."):
@@ -64,10 +64,10 @@ def _execute_run(sidebar, model_paths) -> None:
                 person_conf=sidebar.person_conf,
                 imgsz=DEFAULT_IMGSZ,
             )
-        device_summary = getattr(getattr(pipeline, "age_detector", None), "device", "unknown")
+        device_summary = getattr(getattr(pipeline, "age_detector", None), "device", "unknown") # todo: try person detector too
         st.caption(f"Models are running on: `{device_summary}`")
 
-        pipeline.set_frame_interval(DEFAULT_FRAME_SKIP)
+        pipeline.set_frame_interval(DEFAULT_FRAME_SKIP) # process every frame
 
         source, temp_file = prepare_video_source(
             source_type=sidebar.source_type,
@@ -75,10 +75,10 @@ def _execute_run(sidebar, model_paths) -> None:
             uploaded_file=sidebar.uploaded_file,
         )
 
-        run_id = uuid.uuid4().hex
-        st.session_state.current_run_id = run_id
+        run_id = uuid.uuid4().hex   # generate a unique run ID
+        st.session_state.current_run_id = run_id    # store current run ID in session state
 
-        detection_rows, preview_image, processed_frames, fps, elapsed = run_analysis(
+        detection_rows, preview_image, processed_frames, fps, elapsed = run_analysis(   # run frame by frame analysis
             pipeline=pipeline,
             source=source,
             preview_stride=DEFAULT_PREVIEW_STRIDE,
@@ -88,7 +88,8 @@ def _execute_run(sidebar, model_paths) -> None:
             stop_requested_fn=lambda: st.session_state.get("stop_requested", False),
             run_id=run_id,
         )
-
+       
+        # Store run summary and preview image in session state for later use
         st.session_state.last_run_summary = {
             "run_id": run_id,
             "processed_frames": processed_frames,
@@ -97,15 +98,17 @@ def _execute_run(sidebar, model_paths) -> None:
             "detections": len(detection_rows),
         }
         st.session_state.last_preview_image = preview_image
-        st.session_state.current_run_id = None
-        _refresh_session_logs()
+
+        st.session_state.current_run_id = None # clear current run ID
+        _refresh_session_logs() # refresh latest detection logs after run completion
+
         st.success(
             f"Run complete: processed {processed_frames} frame(s) in {elapsed:.1f}s "
             f"({fps:.2f} FPS)."
         )
     except RuntimeError as exc:
         st.error(str(exc))
-    finally:
+    finally:    # Cleanup UI placeholders, temporary files and reset session state flags
         progress_bar.empty()
         status_placeholder.empty()
         frame_placeholder.empty()
