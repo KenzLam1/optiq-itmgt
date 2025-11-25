@@ -25,22 +25,23 @@ class TrackState:
     logged_at: datetime
 
 
-class DetectionDeduper:
+class DetectionDeduper: #prevents multiple detections in an instance (frame)
     """Lightweight duplicate suppression using temporal/spatial proximity."""
 
     def __init__(self, ttl_seconds: float = 6.0, duplicate_distance: float = 0.06) -> None:
         self.ttl_seconds = ttl_seconds
         self.duplicate_distance = duplicate_distance
-        self._tracks: List[TrackState] = []
+        self._tracks: List[TrackState] = [] # history of detections for coords
 
     def should_log(self, timestamp: datetime, normalized_center: Tuple[float, float]) -> bool:
-        self._prune(timestamp)
+        """Checks if it detects the same object or a different one given the distance from previous detection (for data base)"""
+        self._prune(timestamp) #removes old history
         for track in self._tracks:
-            dx = normalized_center[0] - track.center_x
+            dx = normalized_center[0] - track.center_x #gets difference of new and old, respectively
             dy = normalized_center[1] - track.center_y
-            dist = float(np.hypot(dx, dy))
-            if dist <= self.duplicate_distance:
-                track.center_x = normalized_center[0]
+            dist = float(np.hypot(dx, dy)) #gets distance
+            if dist <= self.duplicate_distance: #if distance is smaller than threshold
+                track.center_x = normalized_center[0] #new detected object is the old detected object
                 track.center_y = normalized_center[1]
                 track.logged_at = timestamp
                 return False
@@ -51,22 +52,22 @@ class DetectionDeduper:
                 logged_at=timestamp,
             )
         )
-        return True
+        return True #the new detection is a different object
 
     def _prune(self, timestamp: datetime) -> None:
         self._tracks = [
             track
             for track in self._tracks
             if (timestamp - track.logged_at).total_seconds() <= self.ttl_seconds
-        ]
+        ] #removes the tracks that exceed ttl.seconds (6s)
 
 
-class DetectionLogBuffer:
+class DetectionLogBuffer: #database
     """Buffer detection logs before writing to SQLite to reduce I/O."""
 
     def __init__(self, flush_threshold: int = 50) -> None:
-        self.flush_threshold = flush_threshold
-        self._entries: List[DetectionLogEntry] = []
+        self.flush_threshold = flush_threshold #should exceed this to put inside SQLite
+        self._entries: List[DetectionLogEntry] = [] #temporary entries 
 
     def add(self, entry: DetectionLogEntry) -> None:
         self._entries.append(entry)
@@ -80,7 +81,7 @@ class DetectionLogBuffer:
         self._entries.clear()
 
     def close(self) -> None:
-        self.flush()
+        self.flush() #for final detections
 
 
 class AnalysisUI:
@@ -90,26 +91,27 @@ class AnalysisUI:
         self.progress_bar = progress_bar
         self.frame_placeholder = frame_placeholder
         self.status_placeholder = status_placeholder
-        self.preview_stride = max(1, preview_stride)
+        self.preview_stride = max(1, preview_stride) #how often frames are shown when no detections
 
-    def show_frame(
+    def show_frame( #displays finished frame
         self,
         annotated: np.ndarray,
         frame_idx: int,
         processed_frames: int,
-        force: bool = False,
+        force: bool = False, #False would return function
     ) -> None:
-        if not force and processed_frames % self.preview_stride != 0:
+        if not force and processed_frames % self.preview_stride != 0: #if frame is a multiple of the preview_stride then show frame
             return
-        rgb_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB)
-        self.frame_placeholder.image(
+        rgb_frame = cv2.cvtColor(annotated, cv2.COLOR_BGR2RGB) #fix color order of frame 
+        self.frame_placeholder.image( #displays and overrides old frame 
             rgb_frame,
-            caption=f"Frame {frame_idx}",
+            caption=f"Frame {frame_idx}", #shows the frame number
             channels="RGB",
             width="stretch",
         )
+        
 
-    def update_progress(self, frame_idx: int, total_frames: Optional[int], processed_frames: int) -> None:
+    def update_progress(self, frame_idx: int, total_frames: Optional[int], processed_frames: int) -> None: #updates progres bar
         if total_frames:
             progress_ratio = min(1.0, frame_idx / max(1, total_frames))
             progress_value = int(progress_ratio * 100)
@@ -117,11 +119,12 @@ class AnalysisUI:
         else:
             self.progress_bar.progress(0, text=f"Processed {processed_frames} frame(s)")
 
-    def update_status(self, processed_frames: int) -> None:
+    def update_status(self, processed_frames: int) -> None: #text version of progress bar when multiple of preview_stride
         if processed_frames % self.preview_stride == 0:
             self.status_placeholder.info(f"Frames processed: {processed_frames}")
 
     def finish(self, *, processed_frames: int, fps: float, elapsed: float, stopped: bool) -> None:
+        #text displayed depending on how it was stopped
         if stopped:
             self.progress_bar.progress(0, text="Analysis stopped")
             self.status_placeholder.warning(
@@ -129,50 +132,50 @@ class AnalysisUI:
             )
         else:
             self.progress_bar.progress(100, text="Analysis complete")
-            self.status_placeholder.success(f"Completed in {elapsed:.1f}s ({fps:.2f} FPS)")
+            self.status_placeholder.success(f"Completed in {elapsed:.1f}s ({fps:.2f} FPS)") #
 
-    def stop_without_frames(self) -> None:
+    def stop_without_frames(self) -> None: #Self-explan
         self.progress_bar.progress(0, text="Analysis stopped")
         self.status_placeholder.info("Analysis stopped before any frames were processed.")
 
 
-def _write_upload_to_temp(uploaded_file: Any) -> Path:
-    suffix = Path(uploaded_file.name).suffix or ".mp4"
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
-    tmp.write(uploaded_file.read())
+def _write_upload_to_temp(uploaded_file: Any) -> Path: #processes the uploaded file and stores as a temporary file
+    suffix = Path(uploaded_file.name).suffix or ".mp4" #checks suffix, defaulting to .mp4
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix) #create temp file, delete=False keeps file even after close()
+    tmp.write(uploaded_file.read()) #puts the bytes into the temp file
     tmp.flush()
     tmp.close()
-    return Path(tmp.name)
+    return Path(tmp.name) #returns path of file to process
 
 
-def prepare_video_source(
+def prepare_video_source( #picks the video source
     source_type: str,
     camera_index: int,
     uploaded_file: Optional[Any],
 ) -> Tuple[Union[int, str], Optional[Path]]:
-    if source_type == "Webcam":
+    if source_type == "Webcam": #if webcam return camera index
         return camera_index, None
 
     if uploaded_file is None:
         raise RuntimeError("Upload a video file before running analysis.")
-    temp_path = _write_upload_to_temp(uploaded_file)
+    temp_path = _write_upload_to_temp(uploaded_file) #if there is a uploaded_file return path
     return str(temp_path), temp_path
 
 
 def _current_manila_time(now_utc: datetime) -> datetime:
     if ZoneInfo is not None:
         return now_utc.astimezone(ZoneInfo("Asia/Manila"))
-    return now_utc.astimezone(timezone(timedelta(hours=8)))
+    return now_utc.astimezone(timezone(timedelta(hours=8))) #convert UTC time to Philippine time
 
 
 def _normalized_center(bbox: Tuple[int, int, int, int], frame_width: int, frame_height: int) -> Tuple[float, float]:
     bbox_x, bbox_y, bbox_w, bbox_h = bbox
     center_x = (bbox_x + bbox_w / 2.0) / max(1, frame_width)
-    center_y = (bbox_y + bbox_h / 2.0) / max(1, frame_height)
+    center_y = (bbox_y + bbox_h / 2.0) / max(1, frame_height) #height is added downward
     return (
-        float(np.clip(center_x, 0.0, 1.0)),
+        float(np.clip(center_x, 0.0, 1.0)), #0 and 1 are the max and min of the image
         float(np.clip(center_y, 0.0, 1.0)),
-    )
+    ) #returns the center of a bounding box
 
 
 def run_analysis(
@@ -185,12 +188,12 @@ def run_analysis(
     stop_requested_fn: Callable[[], bool],
     run_id: str,
 ) -> Tuple[List[Dict[str, Union[str, float, int]]], Optional[np.ndarray], int, float, float]:
-    cap = cv2.VideoCapture(source)
-    if not cap.isOpened():
+    cap = cv2.VideoCapture(source) #rawest form of data a 2D array of RGB numbers
+    if not cap.isOpened(): #checks if it was opened successfully 
         raise RuntimeError("Unable to open the selected video source.")
 
-    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    total_frames = total_frames if total_frames > 0 else None
+    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) #gets total frames of a video
+    total_frames = total_frames if total_frames > 0 else None #checks if frames is not 0
 
     detection_rows: List[Dict[str, Union[str, float, int]]] = []
     preview_image: Optional[np.ndarray] = None
@@ -205,39 +208,40 @@ def run_analysis(
 
     try:
         while True:
-            if stop_requested_fn():
+            if stop_requested_fn(): #stops if user inputted
                 stopped_by_user = True
                 break
 
-            ok, frame = cap.read()
+            ok, frame = cap.read() #reads frame data, exports it as a bool (if it was read correctly, and the data itself)
             if not ok:
-                break
+                break #stops if it wasn't read
 
-            frame_height, frame_width = frame.shape[:2]
-            annotated, detections = pipeline.process(frame, frame_idx)
+            frame_height, frame_width = frame.shape[:2] #gets dimensions of frame
+            annotated, detections = pipeline.process(frame, frame_idx) 
             frame_idx += 1
 
-            if frame_idx % pipeline.frame_interval != 0:
+            if frame_idx % pipeline.frame_interval != 0: #so it only processes on the interval
                 continue
 
             processed_frames += 1
             frame_timestamp = datetime.now(timezone.utc)
-            manila_ts = _current_manila_time(frame_timestamp)
+            manila_ts = _current_manila_time(frame_timestamp) #Philippine time stamp
 
             if detections or preview_image is None:
                 preview_image = annotated.copy()
 
-            ui.show_frame(annotated, frame_idx, processed_frames, force=bool(detections))
+            ui.show_frame(annotated, frame_idx, processed_frames, force=bool(detections))# display finished frame with the data
+            #note: if there are detections always show frame if none then process depending on preview_stride
+            
+            for det in detections: 
+                normalized_center = _normalized_center(det.bbox, frame_width, frame_height) #get center of det
+                if not deduper.should_log(frame_timestamp, normalized_center): #checks if det is seperate detection from previous
+                    continue #if centers are close (should_log = false) then continue 
 
-            for det in detections:
-                normalized_center = _normalized_center(det.bbox, frame_width, frame_height)
-                if not deduper.should_log(frame_timestamp, normalized_center):
-                    continue
+                snapshot = DetectionSnapshot.from_detection(frame_idx, det) #formats data
+                detection_rows.append(snapshot.to_row()) #turns snapshot into a dict and all that data is appended into detection_rows
 
-                snapshot = DetectionSnapshot.from_detection(frame_idx, det)
-                detection_rows.append(snapshot.to_row())
-
-                log_entry = DetectionLogEntry.from_detection(
+                log_entry = DetectionLogEntry.from_detection( #formats data
                     run_id=run_id,
                     detection=det,
                     logged_at=manila_ts,
@@ -246,21 +250,21 @@ def run_analysis(
                     normalized_center=normalized_center,
                     frame_dimensions=(frame_width, frame_height),
                 )
-                log_buffer.add(log_entry)
+                log_buffer.add(log_entry) #adds it to buffer (temp detections data)
 
             ui.update_progress(frame_idx, total_frames, processed_frames)
-            ui.update_status(processed_frames)
+            ui.update_status(processed_frames) #ui updates
     finally:
-        log_buffer.close()
-        cap.release()
+        log_buffer.close() #adds all remaining frame data to database
+        cap.release() #closes camera/video
 
     elapsed = time.time() - start_time
-    if processed_frames == 0:
+    if processed_frames == 0: #runs when no frames were processed 
         if stopped_by_user:
             ui.stop_without_frames()
             return detection_rows, preview_image, processed_frames, 0.0, elapsed
         raise RuntimeError("No frames were processed from the selected source.")
 
-    fps = processed_frames / elapsed if elapsed > 0 else 0.0
+    fps = processed_frames / elapsed if elapsed > 0 else 0.0 #solves for fps
     ui.finish(processed_frames=processed_frames, fps=fps, elapsed=elapsed, stopped=stopped_by_user)
-    return detection_rows, preview_image, processed_frames, fps, elapsed
+    return detection_rows, preview_image, processed_frames, fps, elapsed #returns values for data storage and ui

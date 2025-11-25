@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Tuple
 
 @dataclass
-class DetectionResult:
+class DetectionResult: #where the data is
     """Container for a single detection and its age/gender estimate. Raw output, no formatting."""
 
     bbox: Tuple[int, int, int, int]
