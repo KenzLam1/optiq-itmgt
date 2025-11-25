@@ -66,7 +66,7 @@ def render_sidebar() -> SidebarConfig:
             "Device",
             options=device_options,
             index=0,
-            format_func=lambda opt: DEVICE_LABELS.get(opt, opt.upper()), #Display user-friendly labels
+            format_func=lambda opt: DEVICE_LABELS.get(opt, opt.upper()), #Display user-friendly labels, otherwise uppercase key
         )
         if mps_available:
             st.caption("Apple Silicon detected — pick 'Apple Silicon (MPS)' for higher FPS on Mac.")
