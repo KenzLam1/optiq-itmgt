@@ -7,7 +7,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
 try:
     from zoneinfo import ZoneInfo
-except ImportError:  # Python <3.9 fallback using backports.zoneinfo
+except ImportError:  # if Python < 3.9 won't cause a crash
     ZoneInfo = None  # type: ignore[assignment]
 
 import cv2
