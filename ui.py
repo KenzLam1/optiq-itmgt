@@ -293,35 +293,6 @@ def render_analytics_dashboard(logs_df: Optional[pd.DataFrame] = None) -> None:
                 )
             )
             st.altair_chart(traffic_chart, width="stretch") 
-    
-    st.subheader("Detection Heatmap")# DELETE THISSHIT ....
-    heatmap_bins = st.slider("Heatmap granularity", min_value=5, max_value=30, value=10)
-    heat_df = filtered.dropna(subset=["center_x", "center_y"])
-    if heat_df.empty:
-        st.info("No spatial data available for the selected filters.")
-    else:
-        heat_df = heat_df.copy()
-        heat_df["x_bin"] = np.clip((heat_df["center_x"] * heatmap_bins).astype(int), 0, heatmap_bins - 1)
-        heat_df["y_bin"] = np.clip((heat_df["center_y"] * heatmap_bins).astype(int), 0, heatmap_bins - 1)
-        heat_counts = (
-            heat_df.groupby(["x_bin", "y_bin"])
-            .size()
-            .reset_index(name="count")
-        )
-        if heat_counts.empty:
-            st.info("No detections to plot in the heatmap.")
-        else:
-            heat_chart = (
-                alt.Chart(heat_counts)
-                .mark_rect()
-                .encode(
-                    x=alt.X("x_bin:O", title="Horizontal zone"),
-                    y=alt.Y("y_bin:O", title="Vertical zone", sort="descending"),
-                    color=alt.Color("count:Q", title="Detections"),
-                    tooltip=["x_bin:O", "y_bin:O", "count:Q"],
-                )
-            )
-            st.altair_chart(heat_chart, width="stretch") # .....DELETE THISSHIT
 
     st.subheader("Age Distribution")
     age_df = filtered.dropna(subset=["age_estimate"])   
