@@ -64,8 +64,14 @@ def _execute_run(sidebar, model_paths) -> None:
                 person_conf=sidebar.person_conf,
                 imgsz=DEFAULT_IMGSZ,
             )
-        device_summary = getattr(getattr(pipeline, "age_detector", None), "device", "unknown") # todo: try person detector too
-        st.caption(f"Models are running on: `{device_summary}`")
+            
+        # Prefer age detector device, otherwise fall back to person detector
+        device_summary = None
+        if pipeline.age_detector is not None:
+            device_summary = getattr(pipeline.age_detector, "device", None)
+        if device_summary is None and pipeline.person_detector is not None:
+            device_summary = getattr(pipeline.person_detector, "device", None)
+        st.caption(f"Models are running on: `{device_summary or 'unknown'}`")
 
         pipeline.set_frame_interval(DEFAULT_FRAME_SKIP) # process every frame
 
