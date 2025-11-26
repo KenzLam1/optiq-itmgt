@@ -207,7 +207,7 @@ class YOLOAgeGenderDetector(BaseYOLODetector):
         sv_detections.data["age_range"] = age_ranges
         sv_detections.data["gender_label"] = genders
         sv_detections.data["age_estimate"] = age_estimates
-        sv_detections.data["class_label"] = class_labels #IDK
+        sv_detections.data["class_label"] = class_labels #stored as data for daatabase after all runs
         return detections
 
 

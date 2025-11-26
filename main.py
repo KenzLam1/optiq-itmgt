@@ -103,7 +103,7 @@ def _execute_run(sidebar, model_paths) -> None:
             "elapsed": elapsed,
             "detections": len(detection_rows),
         }
-        st.session_state.last_preview_image = preview_image
+        st.session_state.last_preview_image = preview_image    
 
         st.session_state.current_run_id = None # clear current run ID
         _refresh_session_logs() # refresh latest detection logs after run completion
@@ -144,6 +144,8 @@ def _render_idle_state() -> None:
 # Render the "Run Analysis" tab UI and handle user interactions
 def _render_run_tab(sidebar, model_paths, just_cleared: bool) -> None:
     st.subheader("Run Analysis")
+    st.subheader("ST PREVIEW YES" if st.session_state.get("last_preview_image") else "none")
+
     if just_cleared:
         st.info("Detection logs cleared. Ready for a fresh analysis run.")
     if st.session_state.get("stop_requested"):
