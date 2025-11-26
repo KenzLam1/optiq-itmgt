@@ -20,9 +20,6 @@ DEVICE_LABELS = {
     "cuda": "NVIDIA CUDA",
     "mps": "Apple Silicon (MPS)",
 }
-AGE_GENDER_MODEL_PATH = "age-gender_detector.pt"
-PERSON_DETECTOR_MODEL_PATH = "person_detector.pt"
-
 
 
 @dataclass
