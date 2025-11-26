@@ -8,10 +8,11 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from config import AGE_GENDER_MODEL_PATH, PERSON_DETECTOR_MODEL_PATH
 from data_store import initialize_database, load_detection_logs
 from hardware import available_device_choices
 
+AGE_GENDER_MODEL_PATH = "age-gender_detector.pt"
+PERSON_DETECTOR_MODEL_PATH = "person_detector.pt"
 
 DEVICE_LABELS = {
     "auto": "Auto (best available)",
