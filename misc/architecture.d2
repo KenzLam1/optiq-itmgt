@@ -1,0 +1,46 @@
+direction: right
+
+user: "User"
+ui: "Streamlit UI\n(ui.py)"
+main: "App orchestrator\n(main.py)"
+config: "Model paths\n(config.py)"
+hardware: "Device selection\n(hardware.py)"
+data_store: "SQLite wrapper\n(data_store.py)"
+db: "detections.db\n(SQLite)"
+pipeline_loader: "load_pipeline()\n(pipeline.py)"
+video_src: "prepare_video_source()\n(video.py)"
+video_loop: "run_analysis()\n(video.py)"
+deduper: "DetectionDeduper\n(video.py)"
+buffer: "DetectionLogBuffer\n(video.py)"
+analytics: "Preview + Analytics tabs\n(ui.py)"
+
+vision: {
+    label: "VisionPipeline\n(pipeline.py)"
+    age: "YOLOAgeGenderDetector\n(models.py)"
+    person: "YOLOPersonDetector\n(models.py)"
+}
+
+user -> ui: "interacts via Streamlit"
+ui -> main: "triggers runs, toggles detectors"
+
+main -> config: "get model paths"
+config -> pipeline_loader: "age_model_path\nperson_model_path"
+main -> pipeline_loader: "enable flags + device choice"
+pipeline_loader -> hardware: "resolve_user_device_choice()"
+pipeline_loader -> vision: "construct VisionPipeline"
+vision.age -> hardware: "select_runtime_device()"
+vision.person -> hardware
+
+main -> video_src: "choose camera/upload"
+video_src -> video_loop: "source path/index"
+main -> video_loop: "start analysis run"
+
+video_loop -> vision: "process(frame)"
+vision -> video_loop: "annotated frame + detections"
+video_loop -> deduper: "per-detection dedupe"
+deduper -> buffer: "log entries"
+buffer -> data_store: "append_detection_logs()"
+data_store -> db
+
+data_store -> analytics: "load_detection_logs()"
+main -> analytics: "render preview/analytics"
