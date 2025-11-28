@@ -12,6 +12,7 @@ Currently an unfinished MVP.
    a. pip install -r requirements.txt
    
    b. Install pytorch CUDA enabled or MPS supported depending on your OS
+   
    For mac:
    ```bash
    pip install torch torchvision torchaudio
