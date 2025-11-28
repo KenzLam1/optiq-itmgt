@@ -12,6 +12,13 @@ Currently an unfinished MVP.
    a. pip install -r requirements.txt
    
    b. Install pytorch CUDA enabled or MPS supported depending on your OS
+   
+   For mac:
+   ```bash
+   pip install torch torchvision torchaudio
+   ```
+   For windows (it depends on GPU):
+   https://www.youtube.com/watch?v=M60_J-jjtn0
       
 3. Place the model weights (`age-gender_detector.pt` and `person_detector.pt`) in the project directory. Our trained models can be downloaded from releases (see Initial model weights, tag: weights-v1).
 
